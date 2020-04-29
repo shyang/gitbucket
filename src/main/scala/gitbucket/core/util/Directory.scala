@@ -65,7 +65,7 @@ object Directory {
    * Directory for Git LFS files.
    */
   def getLfsDir(owner: String, repository: String): File =
-    new File(getRepositoryFilesDir(owner, repository), "lfs")
+    new File(getRepositoryDir(owner, repository), "lfs")
 
   /**
    * Directory for files which store diff fragment

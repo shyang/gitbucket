@@ -105,20 +105,24 @@ class GitRepositoryServlet extends GitServlet with SystemSettingsService {
                   GitLfs.BatchUploadResponse(
                     "basic",
                     batchRequest.objects.map { requestObject =>
+                      val file = new File(FileUtil.getLfsFilePath(owner, repository, requestObject.oid))
+                      val skip = file.exists() && file.length() == requestObject.size
                       GitLfs.BatchResponseObject(
                         requestObject.oid,
                         requestObject.size,
                         true,
-                        GitLfs.Actions(
-                          upload = Some(
-                            GitLfs.Action(
-                              href = baseUrl + "/git-lfs/" + owner + "/" + repository + "/" + requestObject.oid,
-                              header =
-                                Map("Authorization" -> StringUtil.encodeBlowfish(s"$timeout ${requestObject.oid}")),
-                              expires_at = new Date(timeout)
+                        if (!skip)
+                          GitLfs.Actions(
+                            upload = Some(
+                              GitLfs.Action(
+                                href = baseUrl + "/git-lfs/" + owner + "/" + repository + "/" + requestObject.oid,
+                                header =
+                                  Map("Authorization" -> StringUtil.encodeBlowfish(s"$timeout ${requestObject.oid}")),
+                                expires_at = new Date(timeout)
+                              )
                             )
                           )
-                        )
+                        else null
                       )
                     }
                   )

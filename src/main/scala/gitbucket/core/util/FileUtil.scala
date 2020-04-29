@@ -57,8 +57,10 @@ object FileUtil {
     }
   }
 
-  def getLfsFilePath(owner: String, repository: String, oid: String): String =
-    s"${Directory.getLfsDir(owner, repository)}/${checkFilename(oid)}"
+  def getLfsFilePath(owner: String, repository: String, oid: String): String = {
+    val sha = checkFilename(oid)
+    return s"${Directory.getLfsDir(owner, repository)}/objects/${sha.substring(0, 2)}/${sha.substring(2, 4)}/${sha}"
+  }
 
   def readableSize(size: Long): String = FileUtils.byteCountToDisplaySize(size)
 
