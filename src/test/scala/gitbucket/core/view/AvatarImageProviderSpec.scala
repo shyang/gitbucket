@@ -7,16 +7,22 @@ import javax.servlet.http.{HttpServletRequest, HttpSession}
 import gitbucket.core.controller.Context
 import gitbucket.core.model.Account
 import gitbucket.core.service.RequestCache
-import gitbucket.core.service.SystemSettingsService.{Ssh, SystemSettings, WebHook, Upload}
+import gitbucket.core.service.SystemSettingsService.{
+  RepositoryOperation,
+  RepositoryViewerSettings,
+  Ssh,
+  SystemSettings,
+  Upload,
+  WebHook
+}
 import org.mockito.Mockito._
-import org.scalatest.FunSpec
-import org.scalatestplus.mockito.MockitoSugar
+import org.scalatest.funspec.AnyFunSpec
 import play.twirl.api.Html
 
-class AvatarImageProviderSpec extends FunSpec with MockitoSugar {
+class AvatarImageProviderSpec extends AnyFunSpec {
 
-  val request = mock[HttpServletRequest]
-  val session = mock[HttpSession]
+  val request = mock(classOf[HttpServletRequest])
+  val session = mock(classOf[HttpSession])
   when(request.getRequestURL).thenReturn(new StringBuffer("http://localhost:8080/path.html"))
   when(request.getRequestURI).thenReturn("/path.html")
   when(request.getContextPath).thenReturn("")
@@ -29,7 +35,7 @@ class AvatarImageProviderSpec extends FunSpec with MockitoSugar {
 
       assert(
         provider.toHtml("user", 32).toString ==
-          "<img src=\"https://www.gravatar.com/avatar/d41d8cd98f00b204e9800998ecf8427e?s=32&d=retro&r=g\" class=\"avatar\" style=\"width: 32px; height: 32px;\" />"
+          """<img src="https://www.gravatar.com/avatar/d41d8cd98f00b204e9800998ecf8427e?s=32&d=retro&r=g" class="avatar" style="width: 32px; height: 32px;" alt="@user" />"""
       )
     }
 
@@ -41,7 +47,7 @@ class AvatarImageProviderSpec extends FunSpec with MockitoSugar {
 
       assert(
         provider.toHtml("user", 32).toString ==
-          s"""<img src="/user/_avatar?${date}" class="avatar" style="width: 32px; height: 32px;" />"""
+          s"""<img src="/user/_avatar?${date}" class="avatar" style="width: 32px; height: 32px;" alt="@user" />"""
       )
     }
 
@@ -53,7 +59,7 @@ class AvatarImageProviderSpec extends FunSpec with MockitoSugar {
 
       assert(
         provider.toHtml("user", 32).toString ==
-          s"""<img src="/user/_avatar?${date}" class="avatar" style="width: 32px; height: 32px;" />"""
+          s"""<img src="/user/_avatar?${date}" class="avatar" style="width: 32px; height: 32px;" alt="@user" />"""
       )
     }
 
@@ -63,7 +69,7 @@ class AvatarImageProviderSpec extends FunSpec with MockitoSugar {
 
       assert(
         provider.toHtml("user", 20, "hoge@hoge.com").toString ==
-          "<img src=\"https://www.gravatar.com/avatar/4712f9b0e63f56ad952ad387eaa23b9c?s=20&d=retro&r=g\" class=\"avatar-mini\" style=\"width: 20px; height: 20px;\" />"
+          """<img src="https://www.gravatar.com/avatar/4712f9b0e63f56ad952ad387eaa23b9c?s=20&d=retro&r=g" class="avatar-mini" style="width: 20px; height: 20px;" alt="@user" />"""
       )
     }
 
@@ -73,7 +79,7 @@ class AvatarImageProviderSpec extends FunSpec with MockitoSugar {
 
       assert(
         provider.toHtml("user", 20).toString ==
-          "<img src=\"/_unknown/_avatar\" class=\"avatar-mini\" style=\"width: 20px; height: 20px;\" />"
+          """<img src="/_unknown/_avatar" class="avatar-mini" style="width: 20px; height: 20px;" alt="@user" />"""
       )
     }
 
@@ -83,7 +89,7 @@ class AvatarImageProviderSpec extends FunSpec with MockitoSugar {
 
       assert(
         provider.toHtml("user", 20, "hoge@hoge.com").toString ==
-          "<img src=\"/_unknown/_avatar\" class=\"avatar-mini\" style=\"width: 20px; height: 20px;\" />"
+          """<img src="/_unknown/_avatar" class="avatar-mini" style="width: 20px; height: 20px;" alt="@user" />"""
       )
     }
 
@@ -93,7 +99,7 @@ class AvatarImageProviderSpec extends FunSpec with MockitoSugar {
 
       assert(
         provider.toHtml("user", 20, "hoge@hoge.com", true).toString ==
-          "<img src=\"/_unknown/_avatar\" class=\"avatar-mini\" style=\"width: 20px; height: 20px;\" data-toggle=\"tooltip\" title=\"user\"/>"
+          """<img src="/_unknown/_avatar" class="avatar-mini" style="width: 20px; height: 20px;" data-toggle="tooltip" title="user" alt="@user" />"""
       )
     }
   }
@@ -122,9 +128,15 @@ class AvatarImageProviderSpec extends FunSpec with MockitoSugar {
       allowAccountRegistration = false,
       allowAnonymousAccess = true,
       isCreateRepoOptionPublic = true,
+      repositoryOperation = RepositoryOperation(
+        create = true,
+        delete = true,
+        rename = true,
+        transfer = true,
+        fork = true
+      ),
       gravatar = useGravatar,
       notification = false,
-      activityLogLimit = None,
       limitVisibleRepositories = false,
       ssh = Ssh(
         enabled = false,
@@ -138,6 +150,7 @@ class AvatarImageProviderSpec extends FunSpec with MockitoSugar {
       oidcAuthentication = false,
       oidc = None,
       skinName = "skin-blue",
+      userDefinedCss = None,
       showMailAddress = false,
       webHook = WebHook(
         blockPrivateAddress = false,
@@ -148,6 +161,9 @@ class AvatarImageProviderSpec extends FunSpec with MockitoSugar {
         timeout = 30 * 10000,
         largeMaxFileSize = 3 * 1024 * 1024,
         largeTimeout = 30 * 10000
+      ),
+      repositoryViewer = RepositoryViewerSettings(
+        maxFiles = 0
       )
     )
 
@@ -157,11 +173,13 @@ class AvatarImageProviderSpec extends FunSpec with MockitoSugar {
   class AvatarImageProviderImpl(account: Option[Account]) extends AvatarImageProvider with RequestCache {
 
     def toHtml(userName: String, size: Int, mailAddress: String = "", tooltip: Boolean = false)(
-      implicit context: Context
+      implicit
+      context: Context
     ): Html = getAvatarImageHtml(userName, size, mailAddress, tooltip)
 
-    override def getAccountByMailAddress(mailAddress: String)(implicit context: Context): Option[Account] = account
-    override def getAccountByUserName(userName: String)(implicit context: Context): Option[Account] = account
+    override def getAccountByMailAddressFromCache(mailAddress: String)(implicit context: Context): Option[Account] =
+      account
+    override def getAccountByUserNameFromCache(userName: String)(implicit context: Context): Option[Account] = account
   }
 
 }

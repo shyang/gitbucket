@@ -9,7 +9,6 @@ import gitbucket.core.service.{AccountService, RepositoryService}
 import gitbucket.core.ssh.SshServer
 import gitbucket.core.util.Implicits._
 import gitbucket.core.util.StringUtil._
-import gitbucket.core.util.SyntaxSugars._
 import gitbucket.core.util.{AdminAuthenticator, Mailer}
 import org.apache.commons.io.IOUtils
 import org.apache.commons.mail.EmailException
@@ -38,15 +37,21 @@ trait SystemSettingsControllerBase extends AccountManagementControllerBase {
     "information" -> trim(label("Information", optional(text()))),
     "allowAccountRegistration" -> trim(label("Account registration", boolean())),
     "allowAnonymousAccess" -> trim(label("Anonymous access", boolean())),
-    "isCreateRepoOptionPublic" -> trim(label("Default option to create a new repository", boolean())),
+    "isCreateRepoOptionPublic" -> trim(label("Default visibility of new repository", boolean())),
+    "repositoryOperation" -> mapping(
+      "create" -> trim(label("Allow all users to create repository", boolean())),
+      "delete" -> trim(label("Allow all users to delete repository", boolean())),
+      "rename" -> trim(label("Allow all users to rename repository", boolean())),
+      "transfer" -> trim(label("Allow all users to transfer repository", boolean())),
+      "fork" -> trim(label("Allow all users to fork repository", boolean()))
+    )(RepositoryOperation.apply),
     "gravatar" -> trim(label("Gravatar", boolean())),
     "notification" -> trim(label("Notification", boolean())),
-    "activityLogLimit" -> trim(label("Limit of activity logs", optional(number()))),
     "limitVisibleRepositories" -> trim(label("limitVisibleRepositories", boolean())),
     "ssh" -> mapping(
       "enabled" -> trim(label("SSH access", boolean())),
       "host" -> trim(label("SSH host", optional(text()))),
-      "port" -> trim(label("SSH port", optional(number()))),
+      "port" -> trim(label("SSH port", optional(number())))
     )(Ssh.apply),
     "useSMTP" -> trim(label("SMTP", boolean())),
     "smtp" -> optionalIfNotChecked(
@@ -91,6 +96,7 @@ trait SystemSettingsControllerBase extends AccountManagementControllerBase {
       )(OIDC.apply)
     ),
     "skinName" -> trim(label("AdminLTE skin name", text(required))),
+    "userDefinedCss" -> trim(label("User-defined CSS", optional(text()))),
     "showMailAddress" -> trim(label("Show mail address", boolean())),
     "webhook" -> mapping(
       "blockPrivateAddress" -> trim(label("Block private address", boolean())),
@@ -101,7 +107,10 @@ trait SystemSettingsControllerBase extends AccountManagementControllerBase {
       "timeout" -> trim(label("Timeout", long(required))),
       "largeMaxFileSize" -> trim(label("Max file size for large file", long(required))),
       "largeTimeout" -> trim(label("Timeout for large file", long(required)))
-    )(Upload.apply)
+    )(Upload.apply),
+    "repositoryViewer" -> mapping(
+      "maxFiles" -> trim(label("Max files", number(required)))
+    )(RepositoryViewerSettings.apply)
   )(SystemSettings.apply).verifying { settings =>
     Vector(
       if (settings.ssh.enabled && settings.baseUrl.isEmpty) {
@@ -453,31 +462,28 @@ trait SystemSettingsControllerBase extends AccountManagementControllerBase {
   })
 
   get("/admin/users/:groupName/_editgroup")(adminOnly {
-    defining(params("groupName")) { groupName =>
-      html.usergroup(getAccountByUserName(groupName, true), getGroupMembers(groupName))
-    }
+    val groupName = params("groupName")
+    html.usergroup(getAccountByUserName(groupName, true), getGroupMembers(groupName))
   })
 
   post("/admin/users/:groupName/_editgroup", editGroupForm)(adminOnly { form =>
-    defining(
-      params("groupName"),
-      form.members
-        .split(",")
-        .map {
-          _.split(":") match {
-            case Array(userName, isManager) => (userName, isManager.toBoolean)
-          }
+    val groupName = params("groupName")
+    val members = form.members
+      .split(",")
+      .map {
+        _.split(":") match {
+          case Array(userName, isManager) => (userName, isManager.toBoolean)
         }
-        .toList
-    ) {
-      case (groupName, members) =>
-        getAccountByUserName(groupName, true).map {
-          account =>
-            updateGroup(groupName, form.description, form.url, form.isRemoved)
+      }
+      .toList
 
-            if (form.isRemoved) {
-              // Remove from GROUP_MEMBER
-              updateGroupMembers(form.groupName, Nil)
+    getAccountByUserName(groupName, true).map {
+      account =>
+        updateGroup(groupName, form.description, form.url, form.isRemoved)
+
+        if (form.isRemoved) {
+          // Remove from GROUP_MEMBER
+          updateGroupMembers(form.groupName, Nil)
 //          // Remove repositories
 //          getRepositoryNamesOfUser(form.groupName).foreach { repositoryName =>
 //            deleteRepository(groupName, repositoryName)
@@ -485,9 +491,9 @@ trait SystemSettingsControllerBase extends AccountManagementControllerBase {
 //            FileUtils.deleteDirectory(getWikiRepositoryDir(groupName, repositoryName))
 //            FileUtils.deleteDirectory(getTemporaryDir(groupName, repositoryName))
 //          }
-            } else {
-              // Update GROUP_MEMBER
-              updateGroupMembers(form.groupName, members)
+        } else {
+          // Update GROUP_MEMBER
+          updateGroupMembers(form.groupName, members)
 //          // Update COLLABORATOR for group repositories
 //          getRepositoryNamesOfUser(form.groupName).foreach { repositoryName =>
 //            removeCollaborators(form.groupName, repositoryName)
@@ -495,13 +501,12 @@ trait SystemSettingsControllerBase extends AccountManagementControllerBase {
 //              addCollaborator(form.groupName, repositoryName, userName)
 //            }
 //          }
-            }
+        }
 
-            updateImage(form.groupName, form.fileId, form.clearImage)
-            redirect("/admin/users")
+        updateImage(form.groupName, form.fileId, form.clearImage)
+        redirect("/admin/users")
 
-        } getOrElse NotFound()
-    }
+    } getOrElse NotFound()
   })
 
   get("/admin/data")(adminOnly {
@@ -536,24 +541,25 @@ trait SystemSettingsControllerBase extends AccountManagementControllerBase {
       }
     }
 
-  private def members: Constraint = new Constraint() {
-    override def validate(name: String, value: String, messages: Messages): Option[String] = {
-      if (value.split(",").exists {
-            _.split(":") match { case Array(userName, isManager) => isManager.toBoolean }
-          }) None
-      else Some("Must select one manager at least.")
-    }
-  }
-
-  protected def disableByNotYourself(paramName: String): Constraint = new Constraint() {
-    override def validate(name: String, value: String, messages: Messages): Option[String] = {
-      params.get(paramName).flatMap { userName =>
-        if (userName == context.loginAccount.get.userName && params.get("removed") == Some("true"))
-          Some("You can't disable your account yourself")
-        else
-          None
+  private def members: Constraint =
+    new Constraint() {
+      override def validate(name: String, value: String, messages: Messages): Option[String] = {
+        if (value.split(",").exists {
+              _.split(":") match { case Array(userName, isManager) => isManager.toBoolean }
+            }) None
+        else Some("Must select one manager at least.")
       }
     }
-  }
+
+  protected def disableByNotYourself(paramName: String): Constraint =
+    new Constraint() {
+      override def validate(name: String, value: String, messages: Messages): Option[String] = {
+        for {
+          userName <- params.get(paramName)
+          loginAccount <- context.loginAccount
+          if userName == loginAccount.userName && params.get("removed") == Some("true")
+        } yield "You can't disable your account yourself"
+      }
+    }
 
 }

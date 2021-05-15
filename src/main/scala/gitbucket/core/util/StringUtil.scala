@@ -145,14 +145,32 @@ object StringUtil {
       .distinct
 
   /**
+   * Extract issue id like ```owner/repository#issueId``` from the given message.
+   *
+   *@param message the message which may contains issue id
+   * @return the iterator of issue id
+   */
+  def extractGlobalIssueId(message: String): List[(Option[String], Option[String], Option[String])] =
+    "\\s?([\\w-\\.]+)?\\/?([\\w\\-\\.]+)?#(\\d+)\\s?".r
+      .findAllIn(message)
+      .matchData
+      .map(i => (Option(i.group(1)), Option(i.group(2)), Option(i.group(3))))
+      .toList
+
+  /**
    * Extract close issue id like ```close #issueId ``` from the given message.
    *
    * @param message the message which may contains close command
    * @return the iterator of issue id
    */
   def extractCloseId(message: String): Seq[String] =
-    "(?i)(?<!\\w)(?:fix(?:e[sd])?|resolve[sd]?|close[sd]?)\\s+#(\\d+)(?!\\w)".r
-      .findAllIn(message)
+    "#(\\d+)".r
+      .findAllIn(
+        "(?i)(?<!\\w)(?:fix(?:e[sd])?|resolve[sd]?|close[sd]?)\\s+#(\\d+)(,\\s?#(\\d+))*(?!\\w)".r
+          .findAllIn(message)
+          .toSeq
+          .mkString(",")
+      )
       .matchData
       .map(_.group(1))
       .toSeq
@@ -174,6 +192,13 @@ object StringUtil {
       case BitBucketUrlPattern(_, user, repository) => s"https://bitbucket.org/$user/$repository"
       case GitLabUrlPattern(_, user, repository)    => s"https://gitlab.com/$user/$repository"
       case _                                        => gitRepositoryUrl
+    }
+  }
+
+  def cutTail(txt: String, limit: Int, suffix: String = ""): String = {
+    txt.length match {
+      case x if x > limit => txt.substring(0, limit).concat(suffix)
+      case _              => txt
     }
   }
 

@@ -29,6 +29,7 @@ class IndexController
     with AccessTokenService
     with AccountFederationService
     with OpenIDConnectService
+    with RequestCache
 
 trait IndexControllerBase extends ControllerBase {
   self: RepositoryService
@@ -78,7 +79,7 @@ trait IndexControllerBase extends ControllerBase {
       }
       .getOrElse {
         gitbucket.core.html.index(
-          getRecentActivities(),
+          getRecentPublicActivities(),
           getVisibleRepositories(None, withoutPhysicalInfo = true),
           showBannerToCreatePersonalAccessToken = false
         )
@@ -161,7 +162,7 @@ trait IndexControllerBase extends ControllerBase {
 
   get("/activities.atom") {
     contentType = "application/atom+xml; type=feed"
-    xml.feed(getRecentActivities())
+    xml.feed(getRecentPublicActivities())
   }
 
   post("/sidebar-collapse") {
@@ -212,8 +213,10 @@ trait IndexControllerBase extends ControllerBase {
             }
             .map { t =>
               Map(
-                "label" -> s"${avatar(t.userName, 16)}<b>@${StringUtil.escapeHtml(t.userName)}</b> ${StringUtil
-                  .escapeHtml(t.fullName)}",
+                "label" -> s"${avatar(t.userName, 16)}<b>@${StringUtil.escapeHtml(
+                  StringUtil.cutTail(t.userName, 25, "...")
+                )}</b> ${StringUtil
+                  .escapeHtml(StringUtil.cutTail(t.fullName, 25, "..."))}",
                 "value" -> t.userName
               )
             }

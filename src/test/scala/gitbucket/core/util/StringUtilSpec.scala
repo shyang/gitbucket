@@ -1,8 +1,8 @@
 package gitbucket.core.util
 
-import org.scalatest.FunSpec
+import org.scalatest.funspec.AnyFunSpec
 
-class StringUtilSpec extends FunSpec {
+class StringUtilSpec extends AnyFunSpec {
 
   describe("urlEncode") {
     it("should encode whitespace to %20") {
@@ -57,12 +57,29 @@ class StringUtilSpec extends FunSpec {
     }
   }
 
+  describe("extractGlobalIssueId") {
+    it("should extract '#xxx' and return extracted id") {
+      assert(StringUtil.extractGlobalIssueId("(refs #123)").toSeq == List((None, None, Some("123"))))
+    }
+    it("should extract 'owner/repository#xxx' and return extracted owner, repository and id") {
+      assert(
+        StringUtil.extractGlobalIssueId("(refs root/test#123)").toSeq == List((Some("root"), Some("test"), Some("123")))
+      )
+    }
+    it("should return Nil from message which does not contain #xxx") {
+      assert(StringUtil.extractGlobalIssueId("this is test!").toSeq == Nil)
+    }
+  }
+
   describe("extractCloseId") {
     it("should extract 'close #xxx' and return extracted id") {
       assert(StringUtil.extractCloseId("(close #123)").toSeq == Seq("123"))
     }
     it("should returns Nil from message which does not contain close command") {
       assert(StringUtil.extractCloseId("(refs #123)").toSeq == Nil)
+    }
+    it("should extract 'close #x, #y, #z' and return extracted multi id") {
+      assert(StringUtil.extractCloseId("(close #1, #2, #3, wip #4, close #5)").toSeq == Seq("1", "2", "3", "5"))
     }
   }
 

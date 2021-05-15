@@ -12,33 +12,38 @@ import java.sql.DriverManager
 import java.io.File
 
 import gitbucket.core.controller.Context
-import gitbucket.core.service.SystemSettingsService.{Ssh, SystemSettings}
+import gitbucket.core.service.SystemSettingsService.{RepositoryOperation, RepositoryViewerSettings, Ssh, SystemSettings}
 import javax.servlet.http.{HttpServletRequest, HttpSession}
-import org.scalatestplus.mockito.MockitoSugar
 import org.mockito.Mockito._
 
 import scala.util.Random
 import scala.util.Using
 
-trait ServiceSpecBase extends MockitoSugar {
+trait ServiceSpecBase {
 
-  val request = mock[HttpServletRequest]
-  val session = mock[HttpSession]
+  val request = mock(classOf[HttpServletRequest])
+  val session = mock(classOf[HttpSession])
   when(request.getRequestURL).thenReturn(new StringBuffer("http://localhost:8080/path.html"))
   when(request.getRequestURI).thenReturn("/path.html")
   when(request.getContextPath).thenReturn("")
   when(request.getSession).thenReturn(session)
 
-  private def createSystemSettings() =
+  def createSystemSettings() =
     SystemSettings(
       baseUrl = None,
       information = None,
       allowAccountRegistration = false,
       allowAnonymousAccess = true,
       isCreateRepoOptionPublic = true,
+      repositoryOperation = RepositoryOperation(
+        create = true,
+        delete = true,
+        rename = true,
+        transfer = true,
+        fork = true
+      ),
       gravatar = false,
       notification = false,
-      activityLogLimit = None,
       limitVisibleRepositories = false,
       ssh = Ssh(
         enabled = false,
@@ -52,6 +57,7 @@ trait ServiceSpecBase extends MockitoSugar {
       oidcAuthentication = false,
       oidc = None,
       skinName = "skin-blue",
+      userDefinedCss = None,
       showMailAddress = false,
       webHook = SystemSettingsService.WebHook(
         blockPrivateAddress = false,
@@ -62,6 +68,9 @@ trait ServiceSpecBase extends MockitoSugar {
         timeout = 30 * 10000,
         largeMaxFileSize = 3 * 1024 * 1024,
         largeTimeout = 30 * 10000
+      ),
+      repositoryViewer = RepositoryViewerSettings(
+        maxFiles = 0
       )
     )
 
@@ -91,7 +100,7 @@ trait ServiceSpecBase extends MockitoSugar {
   lazy val dummyService = new RepositoryService with AccountService with ActivityService with IssuesService
   with MergeService with PullRequestService with CommitsService with CommitStatusService with LabelsService
   with MilestonesService with PrioritiesService with WebHookService with WebHookPullRequestService
-  with WebHookPullRequestReviewCommentService {
+  with WebHookPullRequestReviewCommentService with RequestCache {
     override def fetchAsPullRequest(
       userName: String,
       repositoryName: String,
@@ -114,7 +123,8 @@ trait ServiceSpecBase extends MockitoSugar {
   }
 
   def generateNewIssue(userName: String, repositoryName: String, loginUser: String = "root")(
-    implicit s: Session
+    implicit
+    s: Session
   ): Int = {
     dummyService.insertIssue(
       owner = userName,
@@ -130,7 +140,8 @@ trait ServiceSpecBase extends MockitoSugar {
   }
 
   def generateNewPullRequest(base: String, request: String, loginUser: String)(
-    implicit s: Session
+    implicit
+    s: Session
   ): (Issue, PullRequest) = {
     implicit val context = Context(createSystemSettings(), None, this.request)
     val Array(baseUserName, baseRepositoryName, baesBranch) = base.split("/")

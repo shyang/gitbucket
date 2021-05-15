@@ -16,6 +16,7 @@ import gitbucket.core.util._
 import org.scalatra.i18n.Messages
 import org.scalatra.BadRequest
 import org.scalatra.forms._
+import org.scalatra.Forbidden
 
 class AccountController
     extends AccountControllerBase
@@ -34,6 +35,7 @@ class AccountController
     with WebHookService
     with PrioritiesService
     with RepositoryCreationService
+    with RequestCache
 
 trait AccountControllerBase extends AccountManagementControllerBase {
   self: AccountService
@@ -80,6 +82,8 @@ trait AccountControllerBase extends AccountManagementControllerBase {
 
   case class PersonalTokenForm(note: String)
 
+  case class SyntaxHighlighterThemeForm(theme: String)
+
   val newForm = mapping(
     "userName" -> trim(label("User name", text(required, maxlength(100), identifier, uniqueUserName, reservedNames))),
     "password" -> trim(label("Password", text(required, maxlength(20)))),
@@ -119,6 +123,10 @@ trait AccountControllerBase extends AccountManagementControllerBase {
   val personalTokenForm = mapping(
     "note" -> trim(label("Token", text(required, maxlength(100))))
   )(PersonalTokenForm.apply)
+
+  val syntaxHighlighterThemeForm = mapping(
+    "highlighterTheme" -> trim(label("Theme", text(required)))
+  )(SyntaxHighlighterThemeForm.apply)
 
   case class NewGroupForm(
     groupName: String,
@@ -440,6 +448,29 @@ trait AccountControllerBase extends AccountManagementControllerBase {
     redirect(s"/${userName}/_application")
   })
 
+  /**
+   * Display the user preference settings page
+   */
+  get("/:userName/_preferences")(oneselfOnly {
+    val userName = params("userName")
+    val currentTheme = getAccountPreference(userName) match {
+      case Some(accountHighlighter) => accountHighlighter.highlighterTheme
+      case _                        => "github-v2"
+    }
+    getAccountByUserName(userName).map { x =>
+      html.preferences(x, currentTheme)
+    } getOrElse NotFound()
+  })
+
+  /**
+   * Update the syntax highlighter setting of user
+   */
+  post("/:userName/_preferences/highlighter", syntaxHighlighterThemeForm)(oneselfOnly { form =>
+    val userName = params("userName")
+    addOrUpdateAccountPreference(userName, form.theme)
+    redirect(s"/${userName}/_preferences")
+  })
+
   get("/:userName/_hooks")(managersOnly {
     val userName = params("userName")
     getAccountByUserName(userName).map { account =>
@@ -520,7 +551,8 @@ trait AccountControllerBase extends AccountManagementControllerBase {
     val url = params("url")
     val token = Some(params("token"))
     val ctype = WebHookContentType.valueOf(params("ctype"))
-    val dummyWebHookInfo = RepositoryWebHook(userName, "dummy", url, ctype, token)
+    val dummyWebHookInfo =
+      RepositoryWebHook(userName = userName, repositoryName = "dummy", url = url, ctype = ctype, token = token)
     val dummyPayload = {
       val ownerAccount = getAccountByUserName(userName).get
       WebHookPushPayload.createDummyPayload(ownerAccount)
@@ -597,7 +629,9 @@ trait AccountControllerBase extends AccountManagementControllerBase {
   }
 
   get("/groups/new")(usersOnly {
-    html.creategroup(List(GroupMember("", context.loginAccount.get.userName, true)))
+    context.withLoginAccount { loginAccount =>
+      html.creategroup(List(GroupMember("", loginAccount.userName, true)))
+    }
   })
 
   post("/groups/new", newGroupForm)(usersOnly { form =>
@@ -684,73 +718,92 @@ trait AccountControllerBase extends AccountManagementControllerBase {
    * Show the new repository form.
    */
   get("/new")(usersOnly {
-    html.newrepo(getGroupsByUserName(context.loginAccount.get.userName), context.settings.isCreateRepoOptionPublic)
+    context.withLoginAccount { loginAccount =>
+      html.newrepo(getGroupsByUserName(loginAccount.userName), context.settings.isCreateRepoOptionPublic)
+    }
   })
 
   /**
    * Create new repository.
    */
   post("/new", newRepositoryForm)(usersOnly { form =>
-    LockUtil.lock(s"${form.owner}/${form.name}") {
-      if (getRepository(form.owner, form.name).isEmpty) {
-        createRepository(
-          context.loginAccount.get,
-          form.owner,
-          form.name,
-          form.description,
-          form.isPrivate,
-          form.initOption,
-          form.sourceUrl
-        )
-      }
+    context.withLoginAccount {
+      loginAccount =>
+        if (context.settings.repositoryOperation.create || loginAccount.isAdmin) {
+          LockUtil.lock(s"${form.owner}/${form.name}") {
+            if (getRepository(form.owner, form.name).isDefined) {
+              // redirect to the repository if repository already exists
+              redirect(s"/${form.owner}/${form.name}")
+            } else if (!canCreateRepository(form.owner, loginAccount)) {
+              // Permission error
+              Forbidden()
+            } else {
+              // create repository asynchronously
+              createRepository(
+                loginAccount,
+                form.owner,
+                form.name,
+                form.description,
+                form.isPrivate,
+                form.initOption,
+                form.sourceUrl
+              )
+              // redirect to the repository
+              redirect(s"/${form.owner}/${form.name}")
+            }
+          }
+        } else Forbidden()
     }
-
-    // redirect to the repository
-    redirect(s"/${form.owner}/${form.name}")
   })
 
   get("/:owner/:repository/fork")(readableUsersOnly { repository =>
-    if (repository.repository.options.allowFork) {
-      val loginAccount = context.loginAccount.get
-      val loginUserName = loginAccount.userName
-      val groups = getGroupsByUserName(loginUserName)
-      groups match {
-        case _: List[String] =>
-          val managerPermissions = groups.map { group =>
-            val members = getGroupMembers(group)
-            context.loginAccount.exists(
-              x =>
-                members.exists { member =>
-                  member.userName == x.userName && member.isManager
+    context.withLoginAccount {
+      loginAccount =>
+        if (repository.repository.options.allowFork && (context.settings.repositoryOperation.fork || loginAccount.isAdmin)) {
+          val loginUserName = loginAccount.userName
+          val groups = getGroupsByUserName(loginUserName)
+          groups match {
+            case _: List[String] =>
+              val managerPermissions = groups.map { group =>
+                val members = getGroupMembers(group)
+                context.loginAccount.exists(
+                  x =>
+                    members.exists { member =>
+                      member.userName == x.userName && member.isManager
+                  }
+                )
               }
-            )
+              helper.html.forkrepository(
+                repository,
+                (groups zip managerPermissions).sortBy(_._1)
+              )
+            case _ => redirect(s"/${loginUserName}")
           }
-          helper.html.forkrepository(
-            repository,
-            (groups zip managerPermissions).sortBy(_._1)
-          )
-        case _ => redirect(s"/${loginUserName}")
-      }
-    } else BadRequest()
+        } else BadRequest()
+    }
   })
 
   post("/:owner/:repository/fork", accountForm)(readableUsersOnly { (form, repository) =>
-    if (repository.repository.options.allowFork) {
-      val loginAccount = context.loginAccount.get
-      val loginUserName = loginAccount.userName
-      val accountName = form.accountName
+    context.withLoginAccount {
+      loginAccount =>
+        if (repository.repository.options.allowFork && (context.settings.repositoryOperation.fork || loginAccount.isAdmin)) {
+          val loginUserName = loginAccount.userName
+          val accountName = form.accountName
 
-      if (getRepository(accountName, repository.name).isDefined ||
-          (accountName != loginUserName && !getGroupsByUserName(loginUserName).contains(accountName))) {
-        // redirect to the repository if repository already exists
-        redirect(s"/${accountName}/${repository.name}")
-      } else {
-        // fork repository asynchronously
-        forkRepository(accountName, repository, loginUserName)
-        // redirect to the repository
-        redirect(s"/${accountName}/${repository.name}")
-      }
-    } else BadRequest()
+          if (getRepository(accountName, repository.name).isDefined) {
+            // redirect to the repository if repository already exists
+            redirect(s"/${accountName}/${repository.name}")
+          } else if (!canCreateRepository(accountName, loginAccount)) {
+            // Permission error
+            Forbidden()
+          } else {
+            // fork repository asynchronously
+            forkRepository(accountName, repository, loginUserName)
+            // redirect to the repository
+            redirect(s"/${accountName}/${repository.name}")
+          }
+        } else Forbidden()
+    }
   })
 
   private def existsAccount: Constraint = new Constraint() {

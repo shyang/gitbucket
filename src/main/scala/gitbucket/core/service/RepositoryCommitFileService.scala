@@ -1,8 +1,8 @@
 package gitbucket.core.service
 import gitbucket.core.api.JsonFormat
 import gitbucket.core.model.{Account, WebHook}
-import gitbucket.core.model.Profile._
 import gitbucket.core.model.Profile.profile.blockingApi._
+import gitbucket.core.model.activity.{CloseIssueInfo, PushInfo}
 import gitbucket.core.plugin.PluginRegistry
 import gitbucket.core.service.SystemSettingsService.SystemSettings
 import gitbucket.core.service.WebHookService.WebHookPushPayload
@@ -17,7 +17,12 @@ import org.eclipse.jgit.transport.{ReceiveCommand, ReceivePack}
 import scala.util.Using
 
 trait RepositoryCommitFileService {
-  self: AccountService with ActivityService with IssuesService with PullRequestService with WebHookPullRequestService =>
+  self: AccountService
+    with ActivityService
+    with IssuesService
+    with PullRequestService
+    with WebHookPullRequestService
+    with RepositoryService =>
   import RepositoryCommitFileService._
 
   def commitFiles(
@@ -73,9 +78,9 @@ trait RepositoryCommitFileService {
     content: Array[Byte],
     message: String,
     commit: String,
-    loginAccount: Account,
-    fullName: String,
-    mailAddress: String,
+    pusherAccount: Account,
+    committerName: String,
+    committerMailAddress: String,
     settings: SystemSettings
   )(implicit s: Session, c: JsonFormat.Context): ObjectId = {
 
@@ -86,7 +91,7 @@ trait RepositoryCommitFileService {
       if (path.length == 0) oldFileName else s"${path}/${oldFileName}"
     }
 
-    _commitFile(repository, branch, message, loginAccount, fullName, mailAddress, settings) {
+    _commitFile(repository, branch, message, pusherAccount, committerName, committerMailAddress, settings) {
       case (git, headTip, builder, inserter) =>
         if (headTip.getName == commit) {
           val permission = JGitUtil
@@ -115,7 +120,7 @@ trait RepositoryCommitFileService {
     repository: RepositoryService.RepositoryInfo,
     branch: String,
     message: String,
-    loginAccount: Account,
+    pusherAccount: Account,
     committerName: String,
     committerMailAddress: String,
     settings: SystemSettings
@@ -149,9 +154,9 @@ trait RepositoryCommitFileService {
         val receivePack = new ReceivePack(git.getRepository)
         val receiveCommand = new ReceiveCommand(headTip, commitId, headName)
 
-        // call post commit hook
+        // call pre-commit hook
         val error = PluginRegistry().getReceiveHooks.flatMap { hook =>
-          hook.preReceive(repository.owner, repository.name, receivePack, receiveCommand, committerName)
+          hook.preReceive(repository.owner, repository.name, receivePack, receiveCommand, pusherAccount.userName, false)
         }.headOption
 
         error match {
@@ -172,11 +177,13 @@ trait RepositoryCommitFileService {
             refUpdate.update()
 
             // update pull request
-            updatePullRequests(repository.owner, repository.name, branch, loginAccount, "synchronize", settings)
+            updatePullRequests(repository.owner, repository.name, branch, pusherAccount, "synchronize", settings)
 
             // record activity
+            updateLastActivityDate(repository.owner, repository.name)
             val commitInfo = new CommitInfo(JGitUtil.getRevCommitFromId(git, commitId))
-            recordPushActivity(repository.owner, repository.name, loginAccount.userName, branch, List(commitInfo))
+            val pushInfo = PushInfo(repository.owner, repository.name, pusherAccount.userName, branch, List(commitInfo))
+            recordActivity(pushInfo)
 
             // create issue comment by commit message
             createIssueComment(repository.owner, repository.name, commitInfo)
@@ -185,16 +192,24 @@ trait RepositoryCommitFileService {
             if (branch == repository.repository.defaultBranch) {
               closeIssuesFromMessage(message, committerName, repository.owner, repository.name).foreach { issueId =>
                 getIssue(repository.owner, repository.name, issueId.toString).foreach { issue =>
-                  callIssuesWebHook("closed", repository, issue, loginAccount, settings)
+                  callIssuesWebHook("closed", repository, issue, pusherAccount, settings)
+                  val closeIssueInfo = CloseIssueInfo(
+                    repository.owner,
+                    repository.name,
+                    pusherAccount.userName,
+                    issue.issueId,
+                    issue.title
+                  )
+                  recordActivity(closeIssueInfo)
                   PluginRegistry().getIssueHooks
-                    .foreach(_.closedByCommitComment(issue, repository, message, loginAccount))
+                    .foreach(_.closedByCommitComment(issue, repository, message, pusherAccount))
                 }
               }
             }
 
-            // call post commit hook
+            // call post-commit hook
             PluginRegistry().getReceiveHooks.foreach { hook =>
-              hook.postReceive(repository.owner, repository.name, receivePack, receiveCommand, committerName)
+              hook.postReceive(repository.owner, repository.name, receivePack, receiveCommand, committerName, false)
             }
 
             val commit = new JGitUtil.CommitInfo(JGitUtil.getRevCommitFromId(git, commitId))
@@ -202,7 +217,7 @@ trait RepositoryCommitFileService {
               getAccountByUserName(repository.owner).map { ownerAccount =>
                 WebHookPushPayload(
                   git,
-                  loginAccount,
+                  pusherAccount,
                   headName,
                   repository,
                   List(commit),

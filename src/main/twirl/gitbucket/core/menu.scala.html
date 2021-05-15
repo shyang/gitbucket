@@ -40,7 +40,7 @@
         @menuitem("/pulls", "pulls", "Pull requests", "git-pull-request", repository.pullCount)
         @menuitem("/issues/labels", "labels", "Labels", "tag")
         @menuitem("/issues/priorities", "priorities", "Priorities", "flame")
-        @menuitem("/issues/milestones", "milestones", "Milestones", "milestone")
+        @menuitem("/issues/milestones", "milestones", "Milestones", "milestone", repository.milestoneCount)
       } else {
         @repository.repository.options.externalIssuesUrl.map { externalIssuesUrl =>
           @menuitem(externalIssuesUrl, "issues", "Issues", "issue-opened")
@@ -53,13 +53,13 @@
           @menuitem(externalWikiUrl, "wiki", "Wiki", "book")
         }
       }
-      @if(context.loginAccount.isDefined && (context.loginAccount.get.isAdmin || repository.managers.contains(context.loginAccount.get.userName))){
-        @menuitem("/settings", "settings", "Settings", "gear")
-      }
       @gitbucket.core.plugin.PluginRegistry().getRepositoryMenus.map { menu =>
         @menu(repository, context).map { link =>
           @menuitem(link.path, link.id, link.label, link.icon.getOrElse("ruby"))
         }
+      }
+      @if(context.loginAccount.isDefined && (context.loginAccount.get.isAdmin || repository.managers.contains(context.loginAccount.get.userName))){
+        @menuitem("/settings", "settings", "Settings", "gear")
       }
     </ul>
   </div>
@@ -75,7 +75,7 @@
             @gitbucket.core.plugin.PluginRegistry().getRepositoryHeaders.map { repositoryHeaderComponent =>
               @repositoryHeaderComponent(repository, context)
             }
-            @if(repository.repository.options.allowFork) {
+            @if(repository.repository.options.allowFork && (context.settings.repositoryOperation.fork || context.loginAccount.map(_.isAdmin).getOrElse(false))) {
               @if(context.loginAccount.isEmpty){
                 <a class="btn btn-default btn-sm" href="@context.path/signin?redirect=@helpers.urlEncode(s"${context.path}/${repository.owner}/${repository.name}")">
                   <span class="strong"><i class="octicon octicon-repo-forked"></i>Fork</span><span class="muted">: @repository.forkedCount</span>

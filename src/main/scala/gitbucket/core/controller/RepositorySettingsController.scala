@@ -1,6 +1,6 @@
 package gitbucket.core.controller
 
-import java.time.{LocalDateTime, ZoneId, ZoneOffset}
+import java.time.{LocalDateTime, ZoneOffset}
 import java.util.Date
 
 import gitbucket.core.settings.html
@@ -13,6 +13,7 @@ import gitbucket.core.util.SyntaxSugars._
 import gitbucket.core.util.Implicits._
 import gitbucket.core.util.Directory._
 import gitbucket.core.model.WebHookContentType
+import gitbucket.core.model.activity.RenameRepositoryInfo
 import org.scalatra.forms._
 import org.scalatra.i18n.Messages
 import org.eclipse.jgit.api.Git
@@ -20,6 +21,7 @@ import org.eclipse.jgit.lib.Constants
 import org.eclipse.jgit.lib.ObjectId
 
 import scala.util.Using
+import org.scalatra.Forbidden
 
 class RepositorySettingsController
     extends RepositorySettingsControllerBase
@@ -29,8 +31,10 @@ class RepositorySettingsController
     with ProtectedBranchService
     with CommitStatusService
     with DeployKeyService
+    with ActivityService
     with OwnerAuthenticator
     with UsersAuthenticator
+    with RequestCache
 
 trait RepositorySettingsControllerBase extends ControllerBase {
   self: RepositoryService
@@ -39,12 +43,12 @@ trait RepositorySettingsControllerBase extends ControllerBase {
     with ProtectedBranchService
     with CommitStatusService
     with DeployKeyService
+    with ActivityService
     with OwnerAuthenticator
     with UsersAuthenticator =>
 
   // for repository options
   case class OptionsForm(
-    repositoryName: String,
     description: Option[String],
     isPrivate: Boolean,
     issuesOption: String,
@@ -57,9 +61,6 @@ trait RepositorySettingsControllerBase extends ControllerBase {
   )
 
   val optionsForm = mapping(
-    "repositoryName" -> trim(
-      label("Repository Name", text(required, maxlength(100), repository, renameRepositoryName))
-    ),
     "description" -> trim(label("Description", optional(text()))),
     "isPrivate" -> trim(label("Repository Type", boolean())),
     "issuesOption" -> trim(label("Issues Option", text(required, featureOption))),
@@ -100,9 +101,16 @@ trait RepositorySettingsControllerBase extends ControllerBase {
       "events" -> webhookEvents,
       "ctype" -> label("ctype", text()),
       "token" -> optional(trim(label("token", text(maxlength(100)))))
-    )(
-      (url, events, ctype, token) => WebHookForm(url, events, WebHookContentType.valueOf(ctype), token)
+    )((url, events, ctype, token) => WebHookForm(url, events, WebHookContentType.valueOf(ctype), token))
+
+  // for rename repository
+  case class RenameRepositoryForm(repositoryName: String)
+
+  val renameForm = mapping(
+    "repositoryName" -> trim(
+      label("New repository name", text(required, maxlength(100), repository, renameRepositoryName))
     )
+  )(RenameRepositoryForm.apply)
 
   // for transfer ownership
   case class TransferOwnerShipForm(newOwner: String)
@@ -144,13 +152,8 @@ trait RepositorySettingsControllerBase extends ControllerBase {
       form.mergeOptions,
       form.defaultMergeOption
     )
-    // Change repository name
-    if (repository.name != form.repositoryName) {
-      // Update database
-      renameRepository(repository.owner, repository.name, repository.owner, form.repositoryName)
-    }
     flash.update("info", "Repository settings has been updated.")
-    redirect(s"/${repository.owner}/${form.repositoryName}/settings/options")
+    redirect(s"/${repository.owner}/${repository.name}/settings/options")
   })
 
   /** branch settings */
@@ -175,14 +178,15 @@ trait RepositorySettingsControllerBase extends ControllerBase {
   })
 
   /** Branch protection for branch */
-  get("/:owner/:repository/settings/branches/:branch")(ownerOnly { repository =>
+  get("/:owner/:repository/settings/branches/*")(ownerOnly { repository =>
     import gitbucket.core.api._
-    val branch = params("branch")
+    val branch = params("splat")
+
     if (!repository.branchList.contains(branch)) {
       redirect(s"/${repository.owner}/${repository.name}/settings/branches")
     } else {
       val protection = ApiBranchProtection(getProtectedBranchInfo(repository.owner, repository.name, branch))
-      val lastWeeks = getRecentStatuesContexts(
+      val lastWeeks = getRecentStatusContexts(
         repository.owner,
         repository.name,
         Date.from(LocalDateTime.now.minusWeeks(1).toInstant(ZoneOffset.UTC))
@@ -224,7 +228,13 @@ trait RepositorySettingsControllerBase extends ControllerBase {
    * Display the web hook edit page.
    */
   get("/:owner/:repository/settings/hooks/new")(ownerOnly { repository =>
-    val webhook = RepositoryWebHook(repository.owner, repository.name, "", WebHookContentType.FORM, None)
+    val webhook = RepositoryWebHook(
+      userName = repository.owner,
+      repositoryName = repository.name,
+      url = "",
+      ctype = WebHookContentType.FORM,
+      token = None
+    )
     html.edithook(webhook, Set(WebHook.Push), repository, true)
   })
 
@@ -250,9 +260,10 @@ trait RepositorySettingsControllerBase extends ControllerBase {
    * Send the test request to registered web hook URLs.
    */
   ajaxPost("/:owner/:repository/settings/hooks/test")(ownerOnly { repository =>
-    def _headers(h: Array[org.apache.http.Header]): Array[Array[String]] = h.map { h =>
-      Array(h.getName, h.getValue)
-    }
+    def _headers(h: Array[org.apache.http.Header]): Array[Array[String]] =
+      h.map { h =>
+        Array(h.getName, h.getValue)
+      }
 
     Using.resource(Git.open(getRepositoryDir(repository.owner, repository.name))) {
       git =>
@@ -266,7 +277,13 @@ trait RepositorySettingsControllerBase extends ControllerBase {
         val url = params("url")
         val token = Some(params("token"))
         val ctype = WebHookContentType.valueOf(params("ctype"))
-        val dummyWebHookInfo = RepositoryWebHook(repository.owner, repository.name, url, ctype, token)
+        val dummyWebHookInfo = RepositoryWebHook(
+          userName = repository.owner,
+          repositoryName = repository.name,
+          url = url,
+          ctype = ctype,
+          token = token
+        )
         val dummyPayload = {
           val ownerAccount = getAccountByUserName(repository.owner).get
           val commits =
@@ -325,7 +342,7 @@ trait RepositorySettingsControllerBase extends ControllerBase {
                 .map(
                   res =>
                     Map(
-                      "status" -> res.getStatusLine(),
+                      "status" -> res.getStatusLine.getStatusCode,
                       "body" -> EntityUtils.toString(res.getEntity()),
                       "headers" -> _headers(res.getAllHeaders())
                   )
@@ -365,23 +382,65 @@ trait RepositorySettingsControllerBase extends ControllerBase {
   })
 
   /**
+   * Rename repository.
+   */
+  post("/:owner/:repository/settings/rename", renameForm)(ownerOnly { (form, repository) =>
+    context.withLoginAccount {
+      loginAccount =>
+        if (context.settings.repositoryOperation.rename || loginAccount.isAdmin) {
+          if (repository.name != form.repositoryName) {
+            // Update database and move git repository
+            renameRepository(repository.owner, repository.name, repository.owner, form.repositoryName)
+            // Record activity log
+            val renameInfo = RenameRepositoryInfo(
+              repository.owner,
+              form.repositoryName,
+              loginAccount.userName,
+              repository.name
+            )
+            recordActivity(renameInfo)
+          }
+          redirect(s"/${repository.owner}/${form.repositoryName}")
+        } else Forbidden()
+    }
+  })
+
+  /**
    * Transfer repository ownership.
    */
   post("/:owner/:repository/settings/transfer", transferForm)(ownerOnly { (form, repository) =>
-    // Change repository owner
-    if (repository.owner != form.newOwner) {
-      renameRepository(repository.owner, repository.name, form.newOwner, repository.name)
+    context.withLoginAccount {
+      loginAccount =>
+        if (context.settings.repositoryOperation.transfer || loginAccount.isAdmin) {
+          // Change repository owner
+          if (repository.owner != form.newOwner) {
+            // Update database and move git repository
+            renameRepository(repository.owner, repository.name, form.newOwner, repository.name)
+            // Record activity log
+            val renameInfo = RenameRepositoryInfo(
+              form.newOwner,
+              repository.name,
+              loginAccount.userName,
+              repository.owner
+            )
+            recordActivity(renameInfo)
+          }
+          redirect(s"/${form.newOwner}/${repository.name}")
+        } else Forbidden()
     }
-    redirect(s"/${form.newOwner}/${repository.name}")
   })
 
   /**
    * Delete the repository.
    */
   post("/:owner/:repository/settings/delete")(ownerOnly { repository =>
-    // Delete the repository and related files
-    deleteRepository(repository.repository)
-    redirect(s"/${repository.owner}")
+    context.withLoginAccount { loginAccount =>
+      if (context.settings.repositoryOperation.delete || loginAccount.isAdmin) {
+        // Delete the repository and related files
+        deleteRepository(repository.repository)
+        redirect(s"/${repository.owner}")
+      } else Forbidden()
+    }
   })
 
   /**
@@ -418,32 +477,34 @@ trait RepositorySettingsControllerBase extends ControllerBase {
   /**
    * Provides duplication check for web hook url.
    */
-  private def webHook(needExists: Boolean): Constraint = new Constraint() {
-    override def validate(name: String, value: String, messages: Messages): Option[String] =
-      if (getWebHook(params("owner"), params("repository"), value).isDefined != needExists) {
-        Some(if (needExists) {
-          "URL had not been registered yet."
+  private def webHook(needExists: Boolean): Constraint =
+    new Constraint() {
+      override def validate(name: String, value: String, messages: Messages): Option[String] =
+        if (getWebHook(params("owner"), params("repository"), value).isDefined != needExists) {
+          Some(if (needExists) {
+            "URL had not been registered yet."
+          } else {
+            "URL had been registered already."
+          })
         } else {
-          "URL had been registered already."
-        })
-      } else {
-        None
-      }
-  }
-
-  private def webhookEvents = new ValueType[Set[WebHook.Event]] {
-    def convert(name: String, params: Map[String, Seq[String]], messages: Messages): Set[WebHook.Event] = {
-      WebHook.Event.values.flatMap { t =>
-        params.get(name + "." + t.name).map(_ => t)
-      }.toSet
+          None
+        }
     }
-    def validate(name: String, params: Map[String, Seq[String]], messages: Messages): Seq[(String, String)] =
-      if (convert(name, params, messages).isEmpty) {
-        Seq(name -> messages("error.required").format(name))
-      } else {
-        Nil
+
+  private def webhookEvents =
+    new ValueType[Set[WebHook.Event]] {
+      def convert(name: String, params: Map[String, Seq[String]], messages: Messages): Set[WebHook.Event] = {
+        WebHook.Event.values.flatMap { t =>
+          params.get(name + "." + t.name).map(_ => t)
+        }.toSet
       }
-  }
+      def validate(name: String, params: Map[String, Seq[String]], messages: Messages): Seq[(String, String)] =
+        if (convert(name, params, messages).isEmpty) {
+          Seq(name -> messages("error.required").format(name))
+        } else {
+          Nil
+        }
+    }
 
 //  /**
 //   * Provides Constraint to validate the collaborator name.
@@ -463,70 +524,77 @@ trait RepositorySettingsControllerBase extends ControllerBase {
   /**
    * Duplicate check for the rename repository name.
    */
-  private def renameRepositoryName: Constraint = new Constraint() {
-    override def validate(
-      name: String,
-      value: String,
-      params: Map[String, Seq[String]],
-      messages: Messages
-    ): Option[String] = {
-      for {
-        repoName <- params.optionValue("repository") if repoName != value
-        userName <- params.optionValue("owner")
-        _ <- getRepositoryNamesOfUser(userName).find(_ == value)
-      } yield {
-        "Repository already exists."
+  private def renameRepositoryName: Constraint =
+    new Constraint() {
+      override def validate(
+        name: String,
+        value: String,
+        params: Map[String, Seq[String]],
+        messages: Messages
+      ): Option[String] = {
+        for {
+          repoName <- params.optionValue("repository") if repoName != value
+          userName <- params.optionValue("owner")
+          _ <- getRepositoryNamesOfUser(userName).find(_ == value)
+        } yield {
+          "Repository already exists."
+        }
       }
     }
-  }
 
   /**
-   *
    */
-  private def featureOption: Constraint = new Constraint() {
-    override def validate(
-      name: String,
-      value: String,
-      params: Map[String, Seq[String]],
-      messages: Messages
-    ): Option[String] =
-      if (Seq("DISABLE", "PRIVATE", "PUBLIC", "ALL").contains(value)) None else Some("Option is invalid.")
-  }
+  private def featureOption: Constraint =
+    new Constraint() {
+      override def validate(
+        name: String,
+        value: String,
+        params: Map[String, Seq[String]],
+        messages: Messages
+      ): Option[String] =
+        if (Seq("DISABLE", "PRIVATE", "PUBLIC", "ALL").contains(value)) None else Some("Option is invalid.")
+    }
 
   /**
    * Provides Constraint to validate the repository transfer user.
    */
-  private def transferUser: Constraint = new Constraint() {
-    override def validate(name: String, value: String, messages: Messages): Option[String] =
-      getAccountByUserName(value) match {
-        case None => Some("User does not exist.")
-        case Some(x) =>
-          if (x.userName == params("owner")) {
-            Some("This is current repository owner.")
-          } else {
-            params.get("repository").flatMap { repositoryName =>
-              getRepositoryNamesOfUser(x.userName).find(_ == repositoryName).map { _ =>
-                "User already has same repository."
+  private def transferUser: Constraint =
+    new Constraint() {
+      override def validate(name: String, value: String, messages: Messages): Option[String] =
+        getAccountByUserName(value) match {
+          case None => Some("User does not exist.")
+          case Some(x) =>
+            if (x.userName == params("owner")) {
+              Some("This is current repository owner.")
+            } else {
+              params.get("repository").flatMap { repositoryName =>
+                getRepositoryNamesOfUser(x.userName).find(_ == repositoryName).map { _ =>
+                  "User already has same repository."
+                }
               }
             }
-          }
-      }
-  }
+        }
+    }
 
-  private def mergeOptions = new ValueType[Seq[String]] {
-    override def convert(name: String, params: Map[String, Seq[String]], messages: Messages): Seq[String] = {
-      params.getOrElse("mergeOptions", Nil)
-    }
-    override def validate(name: String, params: Map[String, Seq[String]], messages: Messages): Seq[(String, String)] = {
-      val mergeOptions = params.getOrElse("mergeOptions", Nil)
-      if (mergeOptions.isEmpty) {
-        Seq("mergeOptions" -> "At least one option must be enabled.")
-      } else if (!mergeOptions.forall(x => Seq("merge-commit", "squash", "rebase").contains(x))) {
-        Seq("mergeOptions" -> "mergeOptions are invalid.")
-      } else {
-        Nil
+  private def mergeOptions =
+    new ValueType[Seq[String]] {
+      override def convert(name: String, params: Map[String, Seq[String]], messages: Messages): Seq[String] = {
+        params.getOrElse("mergeOptions", Nil)
+      }
+      override def validate(
+        name: String,
+        params: Map[String, Seq[String]],
+        messages: Messages
+      ): Seq[(String, String)] = {
+        val mergeOptions = params.getOrElse("mergeOptions", Nil)
+        if (mergeOptions.isEmpty) {
+          Seq("mergeOptions" -> "At least one option must be enabled.")
+        } else if (!mergeOptions.forall(x => Seq("merge-commit", "squash", "rebase").contains(x))) {
+          Seq("mergeOptions" -> "mergeOptions are invalid.")
+        } else {
+          Nil
+        }
       }
     }
-  }
 
 }

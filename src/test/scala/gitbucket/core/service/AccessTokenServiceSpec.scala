@@ -1,11 +1,11 @@
 package gitbucket.core.service
 
 import gitbucket.core.model._
-import org.scalatest.FunSuite
+import org.scalatest.funsuite.AnyFunSuite
 import gitbucket.core.model.Profile._
 import gitbucket.core.model.Profile.profile.blockingApi._
 
-class AccessTokenServiceSpec extends FunSuite with ServiceSpecBase {
+class AccessTokenServiceSpec extends AnyFunSuite with ServiceSpecBase {
 
   test("generateAccessToken") {
     withTestDB { implicit session =>
@@ -71,7 +71,7 @@ class AccessTokenServiceSpec extends FunSuite with ServiceSpecBase {
     withTestDB { implicit session =>
       val tokenIt = List("token1", "token1", "token1", "token2").iterator
       val service = new AccessTokenService {
-        override def makeAccessTokenString: String = tokenIt.next
+        override def makeAccessTokenString: String = tokenIt.next()
       }
 
       assert(service.generateAccessToken("root", "note1")._2 == "token1")

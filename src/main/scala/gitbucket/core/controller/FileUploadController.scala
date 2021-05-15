@@ -18,6 +18,7 @@ import org.apache.commons.io.{FileUtils, IOUtils}
 
 import scala.util.Using
 import gitbucket.core.service.SystemSettingsService
+import slick.jdbc.JdbcBackend.Session
 
 /**
  * Provides Ajax based file upload functionality.
@@ -37,7 +38,7 @@ class FileUploadController
     execute(
       { (file, fileId) =>
         FileUtils
-          .writeByteArrayToFile(new File(getTemporaryDir(session.getId), FileUtil.checkFilename(fileId)), file.get)
+          .writeByteArrayToFile(new File(getTemporaryDir(session.getId), FileUtil.checkFilename(fileId)), file.get())
         session += Keys.Session.Upload(fileId) -> file.name
       },
       FileUtil.isImage
@@ -49,7 +50,7 @@ class FileUploadController
     execute(
       { (file, fileId) =>
         FileUtils
-          .writeByteArrayToFile(new File(getTemporaryDir(session.getId), FileUtil.checkFilename(fileId)), file.get)
+          .writeByteArrayToFile(new File(getTemporaryDir(session.getId), FileUtil.checkFilename(fileId)), file.get())
         session += Keys.Session.Upload(fileId) -> file.name
       },
       _ => true
@@ -65,7 +66,7 @@ class FileUploadController
             getAttachedDir(params("owner"), params("repository")),
             FileUtil.checkFilename(fileId + "." + FileUtil.getExtension(file.getName))
           ),
-          file.get
+          file.get()
         )
       },
       _ => true
@@ -144,7 +145,7 @@ class FileUploadController
             { (file, fileId) =>
               FileUtils.writeByteArrayToFile(
                 new File(getReleaseFilesDir(owner, repository), FileUtil.checkFilename(tag + "/" + fileId)),
-                file.get
+                file.get()
               )
             },
             _ => true
@@ -178,7 +179,7 @@ class FileUploadController
   }
 
   private def onlyWikiEditable(owner: String, repository: String, loginAccount: Account)(action: => Any): Any = {
-    implicit val session = Database.getSession(request)
+    implicit val session: Session = Database.getSession(request)
     getRepository(owner, repository) match {
       case Some(x) =>
         x.repository.options.wikiOption match {

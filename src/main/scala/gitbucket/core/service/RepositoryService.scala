@@ -1,6 +1,5 @@
 package gitbucket.core.service
 
-import gitbucket.core.api.JsonFormat
 import gitbucket.core.controller.Context
 import gitbucket.core.util._
 import gitbucket.core.util.SyntaxSugars._
@@ -9,14 +8,11 @@ import gitbucket.core.model.Profile._
 import gitbucket.core.model.Profile.profile.blockingApi._
 import gitbucket.core.model.Profile.dateColumnType
 import gitbucket.core.plugin.PluginRegistry
-import gitbucket.core.service.WebHookService.WebHookPushPayload
 import gitbucket.core.util.Directory.{getRepositoryDir, getRepositoryFilesDir, getTemporaryDir, getWikiRepositoryDir}
-import gitbucket.core.util.JGitUtil.{CommitInfo, FileInfo}
+import gitbucket.core.util.JGitUtil.FileInfo
 import org.apache.commons.io.FileUtils
 import org.eclipse.jgit.api.Git
-import org.eclipse.jgit.dircache.{DirCache, DirCacheBuilder}
-import org.eclipse.jgit.lib.{Repository => _, _}
-import org.eclipse.jgit.transport.{ReceiveCommand, ReceivePack}
+import org.eclipse.jgit.lib.{Repository => _}
 import scala.util.Using
 
 trait RepositoryService {
@@ -38,6 +34,7 @@ trait RepositoryService {
     userName: String,
     description: Option[String],
     isPrivate: Boolean,
+    defaultBranch: String = "master",
     originRepositoryName: Option[String] = None,
     originUserName: Option[String] = None,
     parentRepositoryName: Option[String] = None,
@@ -49,7 +46,7 @@ trait RepositoryService {
         repositoryName = repositoryName,
         isPrivate = isPrivate,
         description = description,
-        defaultBranch = "master",
+        defaultBranch = defaultBranch,
         registeredDate = currentDate,
         updatedDate = currentDate,
         lastActivityDate = currentDate,
@@ -118,15 +115,6 @@ trait RepositoryService {
               t.parentUserName -> t.parentRepositoryName
             }
             .update(newUserName, newRepositoryName)
-
-          // Updates activity fk before deleting repository because activity is sorted by activityId
-          // and it can't be changed by deleting-and-inserting record.
-          Activities.filter(_.byRepository(oldUserName, oldRepositoryName)).list.foreach { activity =>
-            Activities
-              .filter(_.activityId === activity.activityId.bind)
-              .map(x => (x.userName, x.repositoryName))
-              .update(newUserName, newRepositoryName)
-          }
 
           deleteRepositoryOnModel(oldUserName, oldRepositoryName)
 
@@ -213,50 +201,6 @@ trait RepositoryService {
             collaborators.map(_.copy(userName = newUserName, repositoryName = newRepositoryName)): _*
           )
 
-          // Update activity messages
-          Activities
-            .filter { t =>
-              (t.message like s"%:${oldUserName}/${oldRepositoryName}]%") ||
-              (t.message like s"%:${oldUserName}/${oldRepositoryName}#%") ||
-              (t.message like s"%:${oldUserName}/${oldRepositoryName}@%")
-            }
-            .map { t =>
-              t.activityId -> t.message
-            }
-            .list
-            .foreach {
-              case (activityId, message) =>
-                Activities
-                  .filter(_.activityId === activityId.bind)
-                  .map(_.message)
-                  .update(
-                    message
-                      .replace(
-                        s"[repo:${oldUserName}/${oldRepositoryName}]",
-                        s"[repo:${newUserName}/${newRepositoryName}]"
-                      )
-                      .replace(
-                        s"[branch:${oldUserName}/${oldRepositoryName}#",
-                        s"[branch:${newUserName}/${newRepositoryName}#"
-                      )
-                      .replace(
-                        s"[tag:${oldUserName}/${oldRepositoryName}#",
-                        s"[tag:${newUserName}/${newRepositoryName}#"
-                      )
-                      .replace(
-                        s"[pullreq:${oldUserName}/${oldRepositoryName}#",
-                        s"[pullreq:${newUserName}/${newRepositoryName}#"
-                      )
-                      .replace(
-                        s"[issue:${oldUserName}/${oldRepositoryName}#",
-                        s"[issue:${newUserName}/${newRepositoryName}#"
-                      )
-                      .replace(
-                        s"[commit:${oldUserName}/${oldRepositoryName}@",
-                        s"[commit:${newUserName}/${newRepositoryName}@"
-                      )
-                  )
-            }
           // Move git repository
           defining(getRepositoryDir(oldUserName, oldRepositoryName)) { dir =>
             if (dir.isDirectory) {
@@ -293,10 +237,11 @@ trait RepositoryService {
     LockUtil.lock(s"${repository.userName}/${repository.repositoryName}") {
       deleteRepositoryOnModel(repository.userName, repository.repositoryName)
 
-      FileUtils.deleteDirectory(getRepositoryDir(repository.userName, repository.repositoryName))
-      FileUtils.deleteDirectory(getWikiRepositoryDir(repository.userName, repository.repositoryName))
-      FileUtils.deleteDirectory(getTemporaryDir(repository.userName, repository.repositoryName))
-      FileUtils.deleteDirectory(getRepositoryFilesDir(repository.userName, repository.repositoryName))
+      FileUtil.deleteRecursively(getRepositoryDir(repository.userName, repository.repositoryName))
+
+      FileUtil.deleteRecursively(getWikiRepositoryDir(repository.userName, repository.repositoryName))
+      FileUtil.deleteRecursively(getTemporaryDir(repository.userName, repository.repositoryName))
+      FileUtil.deleteRecursively(getRepositoryFilesDir(repository.userName, repository.repositoryName))
 
       // Call hooks
       PluginRegistry().getRepositoryHooks.foreach(_.deleted(repository.userName, repository.repositoryName))
@@ -304,7 +249,7 @@ trait RepositoryService {
   }
 
   private def deleteRepositoryOnModel(userName: String, repositoryName: String)(implicit s: Session): Unit = {
-    Activities.filter(_.byRepository(userName, repositoryName)).delete
+//    Activities.filter(_.byRepository(userName, repositoryName)).delete
     Collaborators.filter(_.byRepository(userName, repositoryName)).delete
     CommitComments.filter(_.byRepository(userName, repositoryName)).delete
     IssueLabels.filter(_.byRepository(userName, repositoryName)).delete
@@ -399,6 +344,10 @@ trait RepositoryService {
             repository.originUserName.getOrElse(repository.userName),
             repository.originRepositoryName.getOrElse(repository.repositoryName)
           ),
+          getOpenMilestones(
+            repository.originUserName.getOrElse(repository.userName),
+            repository.originRepositoryName.getOrElse(repository.repositoryName)
+          ),
           getRepositoryManagers(repository.userName, repository.repositoryName)
         )
     }
@@ -430,6 +379,21 @@ trait RepositoryService {
         (t.userName, t.repositoryName)
       }
       .list
+  }
+
+  /**
+   * Returns the all public repositories.
+   *
+   * @return the repository information list
+   */
+  def getPublicRepositories(withoutPhysicalInfo: Boolean = false)(implicit s: Session): List[RepositoryInfo] = {
+    Repositories
+      .filter { t1 =>
+        t1.isPrivate === false.bind
+      }
+      .sortBy(_.lastActivityDate desc)
+      .list
+      .map(createRepositoryInfo(_, withoutPhysicalInfo))
   }
 
   /**
@@ -482,7 +446,7 @@ trait RepositoryService {
    * @param repositoryUserName the repository owner (if None then returns all repositories which are visible for logged in user)
    * @param withoutPhysicalInfo if true then the result does not include physical repository information such as commit count,
    *                            branches and tags
-   * @param limit if true then result will include only repositories associated with the login account.
+   * @param limit if true then result will include only repositories owned by the login account. otherwise, result will be all visible repositories.
    * @return the repository information which is sorted in descending order of lastActivityDate.
    */
   def getVisibleRepositories(
@@ -754,6 +718,14 @@ trait RepositoryService {
       (t.originUserName === userName.bind) && (t.originRepositoryName === repositoryName.bind)
     }.length).first
 
+  private def getOpenMilestones(userName: String, repositoryName: String)(implicit s: Session): Int =
+    Query(
+      Milestones
+        .filter(_.byRepository(userName, repositoryName))
+        .filter(_.closedDate.isEmpty)
+        .length
+    ).first
+
   def getForkedRepositories(userName: String, repositoryName: String)(implicit s: Session): List[Repository] =
     Repositories
       .filter { t =>
@@ -785,9 +757,10 @@ trait RepositoryService {
 
     // Get template file from project root. When didn't find, will lookup default folder.
     Using.resource(Git.open(Directory.getRepositoryDir(repository.owner, repository.name))) { git =>
-      choiceTemplate(JGitUtil.getFileList(git, repository.repository.defaultBranch, "."))
+      // maxFiles = 1 means not get commit info because the only objectId and filename are necessary here
+      choiceTemplate(JGitUtil.getFileList(git, repository.repository.defaultBranch, ".", maxFiles = 1))
         .orElse {
-          choiceTemplate(JGitUtil.getFileList(git, repository.repository.defaultBranch, ".gitbucket"))
+          choiceTemplate(JGitUtil.getFileList(git, repository.repository.defaultBranch, ".gitbucket", maxFiles = 1))
         }
         .map { file =>
           JGitUtil.getContentFromId(git, file.id, true).collect {
@@ -806,6 +779,7 @@ object RepositoryService {
     issueCount: Int,
     pullCount: Int,
     forkedCount: Int,
+    milestoneCount: Int,
     branchList: Seq[String],
     tags: Seq[JGitUtil.TagInfo],
     managers: Seq[String]
@@ -820,15 +794,27 @@ object RepositoryService {
       issueCount: Int,
       pullCount: Int,
       forkedCount: Int,
+      milestoneCount: Int,
       managers: Seq[String]
     ) =
-      this(repo.owner, repo.name, model, issueCount, pullCount, forkedCount, repo.branchList, repo.tags, managers)
+      this(
+        repo.owner,
+        repo.name,
+        model,
+        issueCount,
+        pullCount,
+        forkedCount,
+        milestoneCount,
+        repo.branchList,
+        repo.tags,
+        managers
+      )
 
     /**
-     * Creates instance without issue and  pull request count.
+     * Creates instance without issue, pull request, and milestone count.
      */
     def this(repo: JGitUtil.RepositoryInfo, model: Repository, forkedCount: Int, managers: Seq[String]) =
-      this(repo.owner, repo.name, model, 0, 0, forkedCount, repo.branchList, repo.tags, managers)
+      this(repo.owner, repo.name, model, 0, 0, forkedCount, 0, repo.branchList, repo.tags, managers)
 
     def httpUrl(implicit context: Context): String = RepositoryService.httpUrl(owner, name)
     def sshUrl(implicit context: Context): Option[String] = RepositoryService.sshUrl(owner, name)
@@ -854,4 +840,9 @@ object RepositoryService {
     } else None
   def openRepoUrl(openUrl: String)(implicit context: Context): String =
     s"github-${context.platform}://openRepo/${openUrl}"
+
+  def readmeFiles: Seq[String] =
+    PluginRegistry().renderableExtensions.map { extension =>
+      s"readme.${extension}"
+    } ++ Seq("readme.txt", "readme")
 }

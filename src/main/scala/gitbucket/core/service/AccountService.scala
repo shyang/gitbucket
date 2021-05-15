@@ -1,7 +1,7 @@
 package gitbucket.core.service
 
 import org.slf4j.LoggerFactory
-import gitbucket.core.model.{Account, AccountExtraMailAddress, GroupMember}
+import gitbucket.core.model.{Account, AccountExtraMailAddress, AccountPreference, GroupMember}
 import gitbucket.core.model.Profile._
 import gitbucket.core.model.Profile.profile.blockingApi._
 import gitbucket.core.model.Profile.dateColumnType
@@ -17,7 +17,9 @@ trait AccountService {
   def authenticate(settings: SystemSettings, userName: String, password: String)(
     implicit s: Session
   ): Option[Account] = {
-    val account = if (settings.ldapAuthentication) {
+    val account = if (password.isEmpty) {
+      None
+    } else if (settings.ldapAuthentication) {
       ldapAuthentication(settings, userName, password)
     } else {
       defaultAuthentication(userName, password)
@@ -103,13 +105,13 @@ trait AccountService {
   }
 
   def getAccountByUserName(userName: String, includeRemoved: Boolean = false)(implicit s: Session): Option[Account] =
-    Accounts filter (t => (t.userName === userName.bind) && (t.removed === false.bind, !includeRemoved)) firstOption
+    Accounts filter (t => (t.userName === userName.bind).&&(t.removed === false.bind, !includeRemoved)) firstOption
 
   def getAccountByUserNameIgnoreCase(userName: String, includeRemoved: Boolean = false)(
     implicit s: Session
   ): Option[Account] =
     Accounts filter (
-      t => (t.userName.toLowerCase === userName.toLowerCase.bind) && (t.removed === false.bind, !includeRemoved)
+      t => (t.userName.toLowerCase === userName.toLowerCase.bind).&&(t.removed === false.bind, !includeRemoved)
     ) firstOption
 
   def getAccountsByUserNames(userNames: Set[String], knowns: Set[Account], includeRemoved: Boolean = false)(
@@ -121,7 +123,7 @@ trait AccountService {
       map
     } else {
       map ++ Accounts
-        .filter(t => (t.userName inSetBind needs) && (t.removed === false.bind, !includeRemoved))
+        .filter(t => (t.userName inSetBind needs).&&(t.removed === false.bind, !includeRemoved))
         .list
         .map(a => a.userName -> a)
         .toMap
@@ -138,15 +140,15 @@ trait AccountService {
             (x.map { e =>
                 e.extraMailAddress.toLowerCase === mailAddress.toLowerCase.bind
               }
-              .getOrElse(false.bind))) && (a.removed === false.bind, !includeRemoved)
+              .getOrElse(false.bind))).&&(a.removed === false.bind, !includeRemoved)
       }
       .map { case (a, e) => a } firstOption
 
   def getAllUsers(includeRemoved: Boolean = true, includeGroups: Boolean = true)(implicit s: Session): List[Account] = {
     Accounts filter { t =>
-      (1.bind === 1.bind) &&
-      (t.groupAccount === false.bind, !includeGroups) &&
-      (t.removed === false.bind, !includeRemoved)
+      (1.bind === 1.bind)
+        .&&(t.groupAccount === false.bind, !includeGroups)
+        .&&(t.removed === false.bind, !includeRemoved)
     } sortBy (_.userName) list
   }
 
@@ -306,6 +308,33 @@ trait AccountService {
   def getGroupNames(userName: String)(implicit s: Session): List[String] = {
     List(userName) ++
       Collaborators.filter(_.collaboratorName === userName.bind).sortBy(_.userName).map(_.userName).list.distinct
+  }
+
+  /*
+   * For account preference
+   */
+  def getAccountPreference(userName: String)(
+    implicit s: Session
+  ): Option[AccountPreference] = {
+    AccountPreferences filter (_.byPrimaryKey(userName)) firstOption
+  }
+
+  def addAccountPreference(userName: String, highlighterTheme: String)(implicit s: Session): Unit = {
+    AccountPreferences insert AccountPreference(userName = userName, highlighterTheme = highlighterTheme)
+  }
+
+  def updateAccountPreference(userName: String, highlighterTheme: String)(implicit s: Session): Unit = {
+    AccountPreferences
+      .filter(_.byPrimaryKey(userName))
+      .map(t => t.highlighterTheme)
+      .update(highlighterTheme)
+  }
+
+  def addOrUpdateAccountPreference(userName: String, highlighterTheme: String)(implicit s: Session): Unit = {
+    getAccountPreference(userName) match {
+      case Some(_) => updateAccountPreference(userName, highlighterTheme)
+      case _       => addAccountPreference(userName, highlighterTheme)
+    }
   }
 
 }

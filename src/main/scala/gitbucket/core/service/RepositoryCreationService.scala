@@ -4,6 +4,7 @@ import java.nio.file.Files
 import java.util.concurrent.ConcurrentHashMap
 
 import gitbucket.core.model.Profile.profile.blockingApi._
+import gitbucket.core.model.activity.{CreateRepositoryInfo, ForkInfo}
 import gitbucket.core.util.Directory._
 import gitbucket.core.util.{FileUtil, JGitUtil, LockUtil}
 import gitbucket.core.model.{Account, Role}
@@ -52,6 +53,11 @@ trait RepositoryCreationService {
     with ActivityService
     with PrioritiesService =>
 
+  def canCreateRepository(repositoryOwner: String, loginAccount: Account)(implicit session: Session): Boolean = {
+    repositoryOwner == loginAccount.userName || getGroupsByUserName(loginAccount.userName)
+      .contains(repositoryOwner) || loginAccount.isAdmin
+  }
+
   def createRepository(
     loginAccount: Account,
     owner: String,
@@ -75,7 +81,7 @@ trait RepositoryCreationService {
     RepositoryCreationService.startCreation(owner, name)
     try {
       Database() withTransaction { implicit session =>
-        val ownerAccount = getAccountByUserName(owner).get
+        //val ownerAccount = getAccountByUserName(owner).get
         val loginUserName = loginAccount.userName
 
         val copyRepositoryDir = if (initOption == "COPY") {
@@ -160,7 +166,7 @@ trait RepositoryCreationService {
         createWikiRepository(loginAccount, owner, name)
 
         // Record activity
-        recordCreateRepositoryActivity(owner, name, loginUserName)
+        recordActivity(CreateRepositoryInfo(owner, name, loginUserName))
 
         // Call hooks
         PluginRegistry().getRepositoryHooks.foreach(_.created(owner, name))
@@ -180,12 +186,14 @@ trait RepositoryCreationService {
         Database() withTransaction { implicit session =>
           val originUserName = repository.repository.originUserName.getOrElse(repository.owner)
           val originRepositoryName = repository.repository.originRepositoryName.getOrElse(repository.name)
+          val originDefaultBranchName = repository.repository.defaultBranch
 
           insertRepository(
             repositoryName = repository.name,
             userName = accountName,
             description = repository.repository.description,
             isPrivate = repository.repository.isPrivate,
+            defaultBranch = originDefaultBranchName,
             originRepositoryName = Some(originRepositoryName),
             originUserName = Some(originUserName),
             parentRepositoryName = Some(repository.name),
@@ -227,7 +235,8 @@ trait RepositoryCreationService {
           }
 
           // Record activity
-          recordForkActivity(repository.owner, repository.name, loginUserName, accountName)
+          val forkInfo = ForkInfo(repository.owner, repository.name, loginUserName, accountName)
+          recordActivity(forkInfo)
 
           // Call hooks
           PluginRegistry().getRepositoryHooks.foreach(_.forked(repository.owner, accountName, repository.name))

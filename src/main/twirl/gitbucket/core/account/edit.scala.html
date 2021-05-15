@@ -34,7 +34,7 @@
               <fieldset class="form-group" id="extraMailAddresses">
                 <span class="strong">Additional Mail Address:</span>
                 @extraMailAddresses.zipWithIndex.map { case (mail, idx) =>
-                  <input type="text" name="extraMailAddresses[@idx]" id="extraMailAddresses[@idx]" class="form-control extraMailAddress" value="@mail"/>
+                  <input type="text" name="extraMailAddresses[@idx]" id="extraMailAddresses[@idx]" class="form-control extraMailAddress" value="@mail" aria-label="Additional mail address"/>
                   <span id="error-extraMailAddresses_@idx" class="error"></span>
                 }
               </fieldset>
@@ -72,7 +72,8 @@ $(function(){
   addExtraMailAddress();
   $('#extraMailAddresses').on('change', '.extraMailAddress', checkExtraMailAddress);
   $('#save').click(function(){
-    if($('#password').val() != ''){
+    let pwval = $('#password').val();
+    if(typeof(pwval) != 'undefined' && pwval != ''){
       return confirm('Are you sure you want to change password?');
     } else {
       return true;

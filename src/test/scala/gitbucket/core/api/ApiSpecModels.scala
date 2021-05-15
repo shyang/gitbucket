@@ -2,6 +2,7 @@ package gitbucket.core.api
 
 import java.util.{Calendar, Date, TimeZone}
 
+import gitbucket.core.api.ApiBranchProtection.EnforcementLevel
 import gitbucket.core.model._
 import gitbucket.core.plugin.PluginInfo
 import gitbucket.core.service.ProtectedBranchService.ProtectedBranchInfo
@@ -79,6 +80,7 @@ object ApiSpecModels {
     issueCount = 1,
     pullCount = 1,
     forkedCount = 1,
+    milestoneCount = 1,
     branchList = Seq("master", "develop"),
     tags = Seq(
       TagInfo(name = "v1.0", time = date("2015-05-05T23:40:27Z"), id = "id1", message = "1.0 released"),
@@ -326,20 +328,34 @@ object ApiSpecModels {
     repository = apiRepository
   )
 
-  val apiBranchProtection = ApiBranchProtection(
+  val apiBranchProtectionOutput = ApiBranchProtection(
     info = ProtectedBranchInfo(
       owner = repo1Name.owner,
       repository = repo1Name.name,
+      branch = "master",
       enabled = true,
       contexts = Seq("continuous-integration/travis-ci"),
       includeAdministrators = true
     )
   )
 
+  val apiBranchProtectionInput = new ApiBranchProtection(
+    url = None,
+    enabled = true,
+    required_status_checks = Some(
+      ApiBranchProtection.Status(
+        url = None,
+        enforcement_level = ApiBranchProtection.Everyone,
+        contexts = Seq("continuous-integration/travis-ci"),
+        contexts_url = None
+      )
+    )
+  )
+
   val apiBranch = ApiBranch(
     name = "master",
     commit = ApiBranchCommit(sha1),
-    protection = apiBranchProtection
+    protection = apiBranchProtectionOutput
   )(
     repositoryName = repo1Name
   )
@@ -443,11 +459,11 @@ object ApiSpecModels {
        |"private":false,
        |"default_branch":"master",
        |"owner":$jsonUser,
+       |"has_issues":true,
        |"id":0,
        |"forks_count":1,
        |"watchers_count":0,
        |"url":"http://gitbucket.exmple.com/api/v3/repos/octocat/Hello-World",
-       |"http_url":"http://gitbucket.exmple.com/git/octocat/Hello-World.git",
        |"clone_url":"http://gitbucket.exmple.com/git/octocat/Hello-World.git",
        |"html_url":"http://gitbucket.exmple.com/octocat/Hello-World"
        |}""".stripMargin
@@ -644,16 +660,30 @@ object ApiSpecModels {
        |"url":"http://gitbucket.exmple.com/api/v3/repos/octocat/Hello-World/commits/6dcb09b5b57875f334f61aebed695e2e4193db5e/status"
        |}""".stripMargin
 
-  val jsonBranchProtection =
+  val jsonBranchProtectionOutput =
     """{
+       |"url":"http://gitbucket.exmple.com/api/v3/repos/octocat/Hello-World/branches/master/protection",
        |"enabled":true,
-       |"required_status_checks":{"enforcement_level":"everyone","contexts":["continuous-integration/travis-ci"]}
+       |"required_status_checks":{
+         |"url":"http://gitbucket.exmple.com/api/v3/repos/octocat/Hello-World/branches/master/protection/required_status_checks",
+         |"enforcement_level":"everyone",
+         |"contexts":["continuous-integration/travis-ci"],
+         |"contexts_url":"http://gitbucket.exmple.com/api/v3/repos/octocat/Hello-World/branches/master/protection/required_status_checks/contexts"}
        |}""".stripMargin
+
+  val jsonBranchProtectionInput =
+    """{
+      |"enabled":true,
+      |"required_status_checks":{
+        |"enforcement_level":"everyone",
+        |"contexts":["continuous-integration/travis-ci"]
+      |}
+    |}""".stripMargin
 
   val jsonBranch = s"""{
        |"name":"master",
        |"commit":{"sha":"6dcb09b5b57875f334f61aebed695e2e4193db5e"},
-       |"protection":$jsonBranchProtection,
+       |"protection":$jsonBranchProtectionOutput,
        |"_links":{
          |"self":"http://gitbucket.exmple.com/api/v3/repos/octocat/Hello-World/branches/master",
          |"html":"http://gitbucket.exmple.com/octocat/Hello-World/tree/master"}
@@ -707,7 +737,7 @@ object ApiSpecModels {
       |"size":100,
       |"label":"release.zip",
       |"file_id":"${assetFileName}",
-      |"browser_download_url":"http://gitbucket.exmple.com/api/v3/repos/octocat/Hello-World/releases/tag1/assets/${assetFileName}"
+      |"browser_download_url":"http://gitbucket.exmple.com/octocat/Hello-World/releases/tag1/assets/${assetFileName}"
       |}""".stripMargin
 
   val jsonRelease =

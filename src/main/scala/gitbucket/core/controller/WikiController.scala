@@ -1,6 +1,7 @@
 package gitbucket.core.controller
 
 import gitbucket.core.model.WebHook
+import gitbucket.core.model.activity.{CreateWikiPageInfo, DeleteWikiInfo, EditWikiPageInfo}
 import gitbucket.core.service.RepositoryService.RepositoryInfo
 import gitbucket.core.service.WebHookService.WebHookGollumPayload
 import gitbucket.core.wiki.html
@@ -13,6 +14,7 @@ import gitbucket.core.util.Directory._
 import org.scalatra.forms._
 import org.eclipse.jgit.api.Git
 import org.scalatra.i18n.Messages
+
 import scala.util.Using
 
 class WikiController
@@ -24,6 +26,7 @@ class WikiController
     with WebHookService
     with ReadableUsersAuthenticator
     with ReferrerAuthenticator
+    with RequestCache
 
 trait WikiControllerBase extends ControllerBase {
   self: WikiService
@@ -133,32 +136,38 @@ trait WikiControllerBase extends ControllerBase {
   })
 
   get("/:owner/:repository/wiki/:page/_revert/:commitId")(readableUsersOnly { repository =>
-    if (isEditable(repository)) {
-      val pageName = StringUtil.urlDecode(params("page"))
-      val Array(from, to) = params("commitId").split("\\.\\.\\.")
+    context.withLoginAccount {
+      loginAccount =>
+        if (isEditable(repository)) {
+          val pageName = StringUtil.urlDecode(params("page"))
+          val Array(from, to) = params("commitId").split("\\.\\.\\.")
 
-      if (revertWikiPage(repository.owner, repository.name, from, to, context.loginAccount.get, Some(pageName))) {
-        redirect(s"/${repository.owner}/${repository.name}/wiki/${StringUtil.urlEncode(pageName)}")
-      } else {
-        flash.update("info", "This patch was not able to be reversed.")
-        redirect(
-          s"/${repository.owner}/${repository.name}/wiki/${StringUtil.urlEncode(pageName)}/_compare/${from}...${to}"
-        )
-      }
-    } else Unauthorized()
+          if (revertWikiPage(repository.owner, repository.name, from, to, loginAccount, Some(pageName))) {
+            redirect(s"/${repository.owner}/${repository.name}/wiki/${StringUtil.urlEncode(pageName)}")
+          } else {
+            flash.update("info", "This patch was not able to be reversed.")
+            redirect(
+              s"/${repository.owner}/${repository.name}/wiki/${StringUtil.urlEncode(pageName)}/_compare/${from}...${to}"
+            )
+          }
+        } else Unauthorized()
+    }
   })
 
   get("/:owner/:repository/wiki/_revert/:commitId")(readableUsersOnly { repository =>
-    if (isEditable(repository)) {
-      val Array(from, to) = params("commitId").split("\\.\\.\\.")
+    context.withLoginAccount {
+      loginAccount =>
+        if (isEditable(repository)) {
+          val Array(from, to) = params("commitId").split("\\.\\.\\.")
 
-      if (revertWikiPage(repository.owner, repository.name, from, to, context.loginAccount.get, None)) {
-        redirect(s"/${repository.owner}/${repository.name}/wiki")
-      } else {
-        flash.update("info", "This patch was not able to be reversed.")
-        redirect(s"/${repository.owner}/${repository.name}/wiki/_compare/${from}...${to}")
-      }
-    } else Unauthorized()
+          if (revertWikiPage(repository.owner, repository.name, from, to, loginAccount, None)) {
+            redirect(s"/${repository.owner}/${repository.name}/wiki")
+          } else {
+            flash.update("info", "This patch was not able to be reversed.")
+            redirect(s"/${repository.owner}/${repository.name}/wiki/_compare/${from}...${to}")
+          }
+        } else Unauthorized()
+    }
   })
 
   get("/:owner/:repository/wiki/:page/_edit")(readableUsersOnly { repository =>
@@ -169,9 +178,9 @@ trait WikiControllerBase extends ControllerBase {
   })
 
   post("/:owner/:repository/wiki/_edit", editForm)(readableUsersOnly { (form, repository) =>
-    if (isEditable(repository)) {
-      defining(context.loginAccount.get) {
-        loginAccount =>
+    context.withLoginAccount {
+      loginAccount =>
+        if (isEditable(repository)) {
           saveWikiPage(
             repository.owner,
             repository.name,
@@ -184,13 +193,9 @@ trait WikiControllerBase extends ControllerBase {
           ).foreach {
             commitId =>
               updateLastActivityDate(repository.owner, repository.name)
-              recordEditWikiPageActivity(
-                repository.owner,
-                repository.name,
-                loginAccount.userName,
-                form.pageName,
-                commitId
-              )
+              val wikiEditInfo =
+                EditWikiPageInfo(repository.owner, repository.name, loginAccount.userName, form.pageName, commitId)
+              recordActivity(wikiEditInfo)
               callWebHookOf(repository.owner, repository.name, WebHook.Gollum, context.settings) {
                 getAccountByUserName(repository.owner).map { repositoryUser =>
                   WebHookGollumPayload("edited", form.pageName, commitId, repository, repositoryUser, loginAccount)
@@ -202,8 +207,8 @@ trait WikiControllerBase extends ControllerBase {
           } else {
             redirect(s"/${repository.owner}/${repository.name}/wiki")
           }
-      }
-    } else Unauthorized()
+        } else Unauthorized()
+    }
   })
 
   get("/:owner/:repository/wiki/_new")(readableUsersOnly { repository =>
@@ -213,9 +218,9 @@ trait WikiControllerBase extends ControllerBase {
   })
 
   post("/:owner/:repository/wiki/_new", newForm)(readableUsersOnly { (form, repository) =>
-    if (isEditable(repository)) {
-      defining(context.loginAccount.get) {
-        loginAccount =>
+    context.withLoginAccount {
+      loginAccount =>
+        if (isEditable(repository)) {
           saveWikiPage(
             repository.owner,
             repository.name,
@@ -228,7 +233,9 @@ trait WikiControllerBase extends ControllerBase {
           ).foreach {
             commitId =>
               updateLastActivityDate(repository.owner, repository.name)
-              recordCreateWikiPageActivity(repository.owner, repository.name, loginAccount.userName, form.pageName)
+              val createWikiPageInfo =
+                CreateWikiPageInfo(repository.owner, repository.name, loginAccount.userName, form.pageName)
+              recordActivity(createWikiPageInfo)
               callWebHookOf(repository.owner, repository.name, WebHook.Gollum, context.settings) {
                 getAccountByUserName(repository.owner).map { repositoryUser =>
                   WebHookGollumPayload("created", form.pageName, commitId, repository, repositoryUser, loginAccount)
@@ -241,28 +248,35 @@ trait WikiControllerBase extends ControllerBase {
           } else {
             redirect(s"/${repository.owner}/${repository.name}/wiki")
           }
-      }
-    } else Unauthorized()
+        } else Unauthorized()
+    }
   })
 
   get("/:owner/:repository/wiki/:page/_delete")(readableUsersOnly { repository =>
-    if (isEditable(repository)) {
-      val pageName = StringUtil.urlDecode(params("page"))
+    context.withLoginAccount {
+      loginAccount =>
+        if (isEditable(repository)) {
+          val pageName = StringUtil.urlDecode(params("page"))
+          deleteWikiPage(
+            repository.owner,
+            repository.name,
+            pageName,
+            loginAccount.fullName,
+            loginAccount.mailAddress,
+            s"Destroyed ${pageName}"
+          )
+          val deleteWikiInfo = DeleteWikiInfo(
+            repository.owner,
+            repository.name,
+            loginAccount.userName,
+            pageName
+          )
+          recordActivity(deleteWikiInfo)
+          updateLastActivityDate(repository.owner, repository.name)
 
-      defining(context.loginAccount.get) { loginAccount =>
-        deleteWikiPage(
-          repository.owner,
-          repository.name,
-          pageName,
-          loginAccount.fullName,
-          loginAccount.mailAddress,
-          s"Destroyed ${pageName}"
-        )
-        updateLastActivityDate(repository.owner, repository.name)
-
-        redirect(s"/${repository.owner}/${repository.name}/wiki")
-      }
-    } else Unauthorized()
+          redirect(s"/${repository.owner}/${repository.name}/wiki")
+        } else Unauthorized()
+    }
   })
 
   get("/:owner/:repository/wiki/_pages")(referrersOnly { repository =>

@@ -1,19 +1,21 @@
 package gitbucket.core.service
 
+import com.github.difflib.DiffUtils
+import com.github.difflib.patch.DeltaType
 import gitbucket.core.model.{CommitComments => _, Session => _, _}
 import gitbucket.core.model.Profile._
 import gitbucket.core.model.Profile.profile.blockingApi._
-import difflib.{Delta, DiffUtils}
 import gitbucket.core.service.RepositoryService.RepositoryInfo
 import gitbucket.core.api.JsonFormat
 import gitbucket.core.controller.Context
+import gitbucket.core.model.activity.OpenPullRequestInfo
 import gitbucket.core.plugin.PluginRegistry
 import gitbucket.core.service.SystemSettingsService.SystemSettings
 import gitbucket.core.util.Directory._
 import gitbucket.core.util.Implicits._
 import gitbucket.core.util.JGitUtil
 import gitbucket.core.util.StringUtil._
-import gitbucket.core.util.JGitUtil.{CommitInfo, DiffInfo}
+import gitbucket.core.util.JGitUtil.{CommitInfo, DiffInfo, getBranches}
 import gitbucket.core.view
 import gitbucket.core.view.helpers
 import org.eclipse.jgit.api.Git
@@ -57,6 +59,15 @@ trait PullRequestService {
       .map(pr => pr.isDraft)
       .update(false)
 
+  def updateBaseBranch(owner: String, repository: String, issueId: Int, baseBranch: String, commitIdTo: String)(
+    implicit s: Session
+  ): Unit = {
+    PullRequests
+      .filter(_.byPrimaryKey(owner, repository, issueId))
+      .map(pr => pr.branch -> pr.commitIdTo)
+      .update((baseBranch, commitIdTo))
+  }
+
   def getPullRequestCountGroupByUser(closed: Boolean, owner: Option[String], repository: Option[String])(
     implicit s: Session
   ): List[PullRequestCount] =
@@ -67,9 +78,9 @@ trait PullRequestService {
       }
       .filter {
         case (t1, t2) =>
-          (t2.closed === closed.bind) &&
-            (t1.userName === owner.get.bind, owner.isDefined) &&
-            (t1.repositoryName === repository.get.bind, repository.isDefined)
+          (t2.closed === closed.bind)
+            .&&(t1.userName === owner.get.bind, owner.isDefined)
+            .&&(t1.repositoryName === repository.get.bind, repository.isDefined)
       }
       .groupBy { case (t1, t2) => t2.openedUserName }
       .map { case (userName, t) => userName -> t.length }
@@ -135,13 +146,14 @@ trait PullRequestService {
       )
 
       // record activity
-      recordPullRequestActivity(
+      val openPullRequestInfo = OpenPullRequestInfo(
         originRepository.owner,
         originRepository.name,
         loginAccount.userName,
         issueId,
         baseIssue.title
       )
+      recordActivity(openPullRequestInfo)
 
       // call web hook
       callPullRequestWebHook("opened", originRepository, issueId, loginAccount, settings)
@@ -172,10 +184,10 @@ trait PullRequestService {
       }
       .filter {
         case (t1, t2) =>
-          (t1.requestUserName === userName.bind) &&
-            (t1.requestRepositoryName === repositoryName.bind) &&
-            (t1.requestBranch === branch.bind) &&
-            (t2.closed === closed.get.bind, closed.isDefined)
+          (t1.requestUserName === userName.bind)
+            .&&(t1.requestRepositoryName === repositoryName.bind)
+            .&&(t1.requestBranch === branch.bind)
+            .&&(t2.closed === closed.get.bind, closed.isDefined)
       }
       .map { case (t1, t2) => t1 }
       .list
@@ -190,10 +202,10 @@ trait PullRequestService {
       }
       .filter {
         case (t1, t2) =>
-          (t1.requestUserName === userName.bind) &&
-            (t1.requestRepositoryName === repositoryName.bind) &&
-            (t1.branch === branch.bind) &&
-            (t2.closed === closed.get.bind, closed.isDefined)
+          (t1.requestUserName === userName.bind)
+            .&&(t1.requestRepositoryName === repositoryName.bind)
+            .&&(t1.branch === branch.bind)
+            .&&(t2.closed === closed.get.bind, closed.isDefined)
       }
       .map { case (t1, t2) => t1 }
       .list
@@ -232,7 +244,7 @@ trait PullRequestService {
     owner: String,
     repository: String,
     branch: String,
-    loginAccount: Account,
+    pusherAccount: Account,
     action: String,
     settings: SystemSettings
   )(
@@ -284,10 +296,80 @@ trait PullRequestService {
           action,
           getRepository(owner, repository).get,
           pullreq.requestBranch,
-          loginAccount,
+          pusherAccount,
           settings
         )
       }
+    }
+  }
+
+  def updatePullRequestsByApi(
+    repository: RepositoryInfo,
+    issueId: Int,
+    loginAccount: Account,
+    settings: SystemSettings,
+    title: Option[String],
+    body: Option[String],
+    state: Option[String],
+    base: Option[String]
+  )(
+    implicit s: Session,
+    c: JsonFormat.Context
+  ): Unit = {
+    getPullRequest(repository.owner, repository.name, issueId).foreach {
+      case (issue, pr) =>
+        if (Repositories.filter(_.byRepository(pr.userName, pr.repositoryName)).exists.run) {
+          // Update base branch
+          base.foreach { _base =>
+            if (pr.branch != _base) {
+              Using.resource(Git.open(getRepositoryDir(repository.owner, repository.name))) { git =>
+                getBranches(git, repository.repository.defaultBranch, origin = true)
+                  .find(_.name == _base)
+                  .foreach(br => updateBaseBranch(repository.owner, repository.name, issueId, br.name, br.commitId))
+              }
+              createComment(
+                repository.owner,
+                repository.name,
+                loginAccount.userName,
+                issue.issueId,
+                pr.branch + "\r\n" + _base,
+                "change_base_branch"
+              )
+            }
+          }
+          // Update title and content
+          title.foreach { _title =>
+            updateIssue(repository.owner, repository.name, issueId, _title, body)
+            if (issue.title != _title) {
+              createComment(
+                repository.owner,
+                repository.name,
+                loginAccount.userName,
+                issue.issueId,
+                issue.title + "\r\n" + _title,
+                "change_title"
+              )
+            }
+          }
+          // Update state
+          val action = (state, issue.closed) match {
+            case (Some("open"), true) =>
+              updateClosed(repository.owner, repository.name, issueId, closed = false)
+              "reopened"
+            case (Some("closed"), false) =>
+              updateClosed(repository.owner, repository.name, issueId, closed = true)
+              "closed"
+            case _ => "edited"
+          }
+          // Call web hook
+          callPullRequestWebHookByRequestBranch(
+            action,
+            getRepository(repository.owner, repository.name).get,
+            pr.requestBranch,
+            loginAccount,
+            settings
+          )
+        }
     }
   }
 
@@ -360,16 +442,17 @@ trait PullRequestService {
                   case Left(oldLine) => updateCommitCommentPosition(commentId, newCommitId, Some(oldLine), None)
                   case Right(newLine) =>
                     var counter = newLine
-                    patch.getDeltas.asScala.filter(_.getOriginal.getPosition < newLine).foreach { delta =>
+                    patch.getDeltas.asScala.filter(_.getSource.getPosition < newLine).foreach { delta =>
                       delta.getType match {
-                        case Delta.TYPE.CHANGE =>
-                          if (delta.getOriginal.getPosition <= newLine - 1 && newLine <= delta.getOriginal.getPosition + delta.getRevised.getLines.size) {
+                        case DeltaType.CHANGE =>
+                          if (delta.getSource.getPosition <= newLine - 1 && newLine <= delta.getSource.getPosition + delta.getTarget.getLines.size) {
                             counter = -1
                           } else {
-                            counter = counter + (delta.getRevised.getLines.size - delta.getOriginal.getLines.size)
+                            counter = counter + (delta.getTarget.getLines.size - delta.getSource.getLines.size)
                           }
-                        case Delta.TYPE.INSERT => counter = counter + delta.getRevised.getLines.size
-                        case Delta.TYPE.DELETE => counter = counter - delta.getOriginal.getLines.size
+                        case DeltaType.INSERT => counter = counter + delta.getTarget.getLines.size
+                        case DeltaType.DELETE => counter = counter - delta.getSource.getLines.size
+                        case DeltaType.EQUAL  => // Do nothing
                       }
                     }
                     if (counter >= 0) {
@@ -530,7 +613,7 @@ object PullRequestService {
 
   case class MergeStatus(
     conflictMessage: Option[String],
-    commitStatues: List[CommitStatus],
+    commitStatuses: List[CommitStatus],
     branchProtection: ProtectedBranchService.ProtectedBranchInfo,
     branchIsOutOfDate: Boolean,
     hasUpdatePermission: Boolean,
@@ -541,7 +624,7 @@ object PullRequestService {
 
     val hasConflict = conflictMessage.isDefined
     val statuses: List[CommitStatus] =
-      commitStatues ++ (branchProtection.contexts.toSet -- commitStatues.map(_.context).toSet)
+      commitStatuses ++ (branchProtection.contexts.toSet -- commitStatuses.map(_.context).toSet)
         .map(CommitStatus.pending(branchProtection.owner, branchProtection.repository, _))
     val hasRequiredStatusProblem = needStatusCheck && branchProtection.contexts.exists(
       context => statuses.find(_.context == context).map(_.state) != Some(CommitState.SUCCESS)

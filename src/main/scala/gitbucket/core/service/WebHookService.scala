@@ -3,7 +3,6 @@ package gitbucket.core.service
 import fr.brouillard.oss.security.xhub.XHub
 import fr.brouillard.oss.security.xhub.XHub.{XHubConverter, XHubDigest}
 import gitbucket.core.api._
-import gitbucket.core.controller.Context
 import gitbucket.core.model.{
   Account,
   AccountWebHook,
@@ -83,7 +82,7 @@ trait WebHookService {
     implicit s: Session
   ): Option[(RepositoryWebHook, Set[WebHook.Event])] =
     RepositoryWebHooks
-      .filter(_.byPrimaryKey(owner, repository, url))
+      .filter(_.byRepositoryUrl(owner, repository, url))
       .join(RepositoryWebHookEvents)
       .on { (w, t) =>
         t.byRepositoryWebHook(w)
@@ -95,6 +94,24 @@ trait WebHookService {
       .mapValues(_.map(_._2).toSet)
       .headOption
 
+  /** get All WebHook informations of repository */
+  def getWebHookById(id: Int)(
+    implicit s: Session
+  ): Option[(RepositoryWebHook, Set[WebHook.Event])] =
+    RepositoryWebHooks
+      .filter(_.byId(id))
+      .join(RepositoryWebHookEvents)
+      .on { (w, t) =>
+        t.byRepositoryWebHook(w)
+      }
+      .map { case (w, t) => w -> t.event }
+      .list
+      .groupBy(_._1)
+      .view
+      .mapValues(_.map(_._2).toSet)
+      .toList
+      .headOption
+
   def addWebHook(
     owner: String,
     repository: String,
@@ -103,7 +120,13 @@ trait WebHookService {
     ctype: WebHookContentType,
     token: Option[String]
   )(implicit s: Session): Unit = {
-    RepositoryWebHooks insert RepositoryWebHook(owner, repository, url, ctype, token)
+    RepositoryWebHooks insert RepositoryWebHook(
+      userName = owner,
+      repositoryName = repository,
+      url = url,
+      ctype = ctype,
+      token = token
+    )
     events.map { event: WebHook.Event =>
       RepositoryWebHookEvents insert RepositoryWebHookEvent(owner, repository, url, event)
     }
@@ -118,7 +141,7 @@ trait WebHookService {
     token: Option[String]
   )(implicit s: Session): Unit = {
     RepositoryWebHooks
-      .filter(_.byPrimaryKey(owner, repository, url))
+      .filter(_.byRepositoryUrl(owner, repository, url))
       .map(w => (w.ctype, w.token))
       .update((ctype, token))
     RepositoryWebHookEvents.filter(_.byRepositoryWebHook(owner, repository, url)).delete
@@ -127,8 +150,32 @@ trait WebHookService {
     }
   }
 
+  def updateWebHookByApi(
+    id: Int,
+    owner: String,
+    repository: String,
+    url: String,
+    events: Set[WebHook.Event],
+    ctype: WebHookContentType,
+    token: Option[String]
+  )(implicit s: Session): Unit = {
+    RepositoryWebHooks
+      .filter(_.byId(id))
+      .map(w => (w.url, w.ctype, w.token))
+      .update((url, ctype, token))
+    RepositoryWebHookEvents.filter(_.byRepositoryWebHook(owner, repository, url)).delete
+    events.map { event: WebHook.Event =>
+      RepositoryWebHookEvents insert RepositoryWebHookEvent(owner, repository, url, event)
+    }
+  }
+
+  // Records in WEB_HOOK_EVENT will be deleted automatically by cascaded constraint
   def deleteWebHook(owner: String, repository: String, url: String)(implicit s: Session): Unit =
-    RepositoryWebHooks.filter(_.byPrimaryKey(owner, repository, url)).delete
+    RepositoryWebHooks.filter(_.byRepositoryUrl(owner, repository, url)).delete
+
+  // Records in WEB_HOOK_EVENT will be deleted automatically by cascaded constraint
+  def deleteWebHookById(id: Int)(implicit s: Session): Unit =
+    RepositoryWebHooks.filter(_.byId(id)).delete
 
   /** get All AccountWebHook informations of user */
   def getAccountWebHooks(owner: String)(implicit s: Session): List[(AccountWebHook, Set[WebHook.Event])] =
@@ -209,11 +256,11 @@ trait WebHookService {
   )(implicit s: Session, c: JsonFormat.Context): Unit = {
     val webHooks = getWebHooksByEvent(owner, repository, event)
     if (webHooks.nonEmpty) {
-      makePayload.map(callWebHook(event, webHooks, _, settings))
+      makePayload.foreach(callWebHook(event, webHooks, _, settings))
     }
     val accountWebHooks = getAccountWebHooksByEvent(owner, event)
     if (accountWebHooks.nonEmpty) {
-      makePayload.map(callWebHook(event, accountWebHooks, _, settings))
+      makePayload.foreach(callWebHook(event, accountWebHooks, _, settings))
     }
   }
 
@@ -237,7 +284,7 @@ trait WebHookService {
       val json = JsonFormat(payload)
 
       webHooks.map { webHook =>
-        val reqPromise = Promise[HttpRequest]
+        val reqPromise = Promise[HttpRequest]()
         val f = Future {
           val itcp = new org.apache.http.HttpRequestInterceptor {
             def process(res: HttpRequest, ctx: HttpContext): Unit = {

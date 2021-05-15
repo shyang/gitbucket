@@ -1,15 +1,51 @@
 # Changelog
 All changes to the project will be documented in this file.
 
-### 4.33.0 - 31 Dec 2019
+### 4.35.3 - 14 Jan 2021
+- Fix a bug that Wiki page cannot be deleted
+- Fix a deployment issue on Tomcat
 
+### 4.35.2 - 30 Dec 2020
+- Upgrade gitbucket-notifications-plugin to 1.10.0
+- Upgrade oauth2-oidc-sdk to 8.29.1 to solve dependency issue
+
+### 4.35.1 - 29 Dec 2020
+- Fix database migration issue which happens if webhook is configured
+- Call push webhook when pull request is merged
+- Show commit status at commits tab of pull request
+
+### 4.35.0 - 25 Dec 2020
+- Editor and source viewer color theme
+- Auto completion for issues and pull requests
+- Upload image from clipboard
+- Close multiple issues by commit comment
+- Create pull request from online editor
+- Milestone overview
+- Commit status at various places
+- WebAPI coverage improvements
+
+## 4.34.0 - 26 Jul 2020
+- Enhancement admin settings UI
+   - File upload settings
+   - Restrict repository operations
+   - User-defined CSS
+   - Limit the repository list in the sidebar
+- Improve MariaDB support
+- Improve activity logging
+- CLI option to persist session on disk in the standalone mode
+- Web API updates
+  - Add [list commits API](https://developer.github.com/v3/repos/commits/#list-commits)
+- Bundled plugins updates
+  - [gitbucket-gist-plugin](https://github.com/gitbucket/gitbucket-gist-plugin) 4.18.0 -> 4.19.0
+  - [gitbucket-notifications-plugin](https://github.com/gitbucket/gitbucket-notifications-plugin) 1.8.0 -> 1.9.0
+
+## 4.33.0 - 31 Dec 2019
 - All CLI options are configurable by environment variables
 - Folding pull request files
 - WebHook security options
 - Add assignee and assignees properties to some Web APIs' response
 
-### 4.32.0 - 7 Aug 2019
-
+## 4.32.0 - 7 Aug 2019
 - Bump to Scala 2.13.0 and Scalatra 2.7.0
 - Draft pull request
 - Drop network installation of plugins
@@ -17,20 +53,20 @@ All changes to the project will be documented in this file.
 - Apply default priority to pull requests
 - Focus title after clicking issue / pull request edit button
 
-### 4.31.2 - 7 Apr 2019
+## 4.31.2 - 7 Apr 2019
 - Bug and security fix
 
-### 4.31.1 - 17 Mar 2019
+## 4.31.1 - 17 Mar 2019
 - Bug fix
 
-### 4.31.0 - 17 Mar 2019
+## 4.31.0 - 17 Mar 2019
 - Docker support in CI plugin
 - Verify GPG key signed commit
 - OAuth2 Token (sent as a parameter) authentication support and new APIs in Web API
 - OGP (Open Graph protocol) support
 - Username completion with avatars
 
-### 4.30.1 - 22 Dec 2018
+## 4.30.1 - 22 Dec 2018
 - Bug fix for several WebHooks and Web API
 
 ## 4.30.0 - 15 Dec 2018
@@ -117,7 +153,7 @@ All changes to the project will be documented in this file.
 - Submodule links to web page
 - Clarify close/reopen button
 
-# 4.20.0 - 23 Dec 2017
+## 4.20.0 - 23 Dec 2017
 - Squash and rebase merge strategy for pull requests
 - Quick pull request creation
 - Download patch from the diff view

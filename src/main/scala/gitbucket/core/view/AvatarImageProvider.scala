@@ -17,7 +17,7 @@ trait AvatarImageProvider { self: RequestCache =>
 
     val src = if (mailAddress.isEmpty) {
       // by user name
-      getAccountByUserName(userName).map { account =>
+      getAccountByUserNameFromCache(userName).map { account =>
         if (account.image.isEmpty && context.settings.gravatar) {
           s"""https://www.gravatar.com/avatar/${StringUtil.md5(account.mailAddress.toLowerCase)}?s=${size}&d=retro&r=g"""
         } else {
@@ -28,7 +28,7 @@ trait AvatarImageProvider { self: RequestCache =>
       }
     } else {
       // by mail address
-      getAccountByMailAddress(mailAddress).map { account =>
+      getAccountByMailAddressFromCache(mailAddress).map { account =>
         if (account.image.isEmpty && context.settings.gravatar) {
           s"""https://www.gravatar.com/avatar/${StringUtil.md5(account.mailAddress.toLowerCase)}?s=${size}&d=retro&r=g"""
         } else {
@@ -45,11 +45,11 @@ trait AvatarImageProvider { self: RequestCache =>
 
     if (tooltip) {
       Html(
-        s"""<img src="${src}" class="${if (size > 20) { "avatar" } else { "avatar-mini" }}" style="width: ${size}px; height: ${size}px;" data-toggle="tooltip" title="${userName}"/>"""
+        s"""<img src="${src}" class="${if (size > 20) { "avatar" } else { "avatar-mini" }}" style="width: ${size}px; height: ${size}px;" data-toggle="tooltip" title="${userName}" alt="@${userName}" />"""
       )
     } else {
       Html(
-        s"""<img src="${src}" class="${if (size > 20) { "avatar" } else { "avatar-mini" }}" style="width: ${size}px; height: ${size}px;" />"""
+        s"""<img src="${src}" class="${if (size > 20) { "avatar" } else { "avatar-mini" }}" style="width: ${size}px; height: ${size}px;" alt="@${userName}" />"""
       )
     }
   }
